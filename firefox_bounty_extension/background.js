@@ -142,29 +142,37 @@ chrome.webRequest.onHeadersReceived.addListener(
 );
 
 // ---- Badge Management ----
+let badgeTimeoutMap = {};
+
 function updateBadge(host) {
-    chrome.storage.local.get([host], (result) => {
-        const data = result[host];
-        if (!data) return;
+    if (badgeTimeoutMap[host]) {
+        clearTimeout(badgeTimeoutMap[host]);
+    }
 
-        let totalVulns = 0;
-        if (data.csrf) totalVulns += data.csrf.length;
-        if (data.xss) totalVulns += data.xss.length;
-        if (data.reflected_params) totalVulns += data.reflected_params.length;
-        if (data.dom_sinks) totalVulns += data.dom_sinks.length;
-        if (data.post_messages) totalVulns += data.post_messages.length;
-        if (data.leaks) totalVulns += data.leaks.length;
-        if (data.cloud_assets) totalVulns += data.cloud_assets.length;
-        if (data.cors && data.cors.severity === 'CRITICAL') totalVulns += 1;
+    badgeTimeoutMap[host] = setTimeout(() => {
+        chrome.storage.local.get([host], (result) => {
+            const data = result[host];
+            if (!data) return;
 
-        if (totalVulns > 0) {
-            chrome.action.setBadgeText({ text: totalVulns.toString() });
-            const color = totalVulns > 5 ? '#f85149' : '#d29922'; // Red for high count, Orange otherwise
-            chrome.action.setBadgeBackgroundColor({ color: color });
-        } else {
-            chrome.action.setBadgeText({ text: '' });
-        }
-    });
+            let totalVulns = 0;
+            if (data.csrf) totalVulns += data.csrf.length;
+            if (data.xss) totalVulns += data.xss.length;
+            if (data.reflected_params) totalVulns += data.reflected_params.length;
+            if (data.dom_sinks) totalVulns += data.dom_sinks.length;
+            if (data.post_messages) totalVulns += data.post_messages.length;
+            if (data.leaks) totalVulns += data.leaks.length;
+            if (data.cloud_assets) totalVulns += data.cloud_assets.length;
+            if (data.cors && data.cors.severity === 'CRITICAL') totalVulns += 1;
+
+            if (totalVulns > 0) {
+                chrome.action.setBadgeText({ text: totalVulns.toString() });
+                const color = totalVulns > 5 ? '#f85149' : '#d29922'; // Red for high count, Orange otherwise
+                chrome.action.setBadgeBackgroundColor({ color: color });
+            } else {
+                chrome.action.setBadgeText({ text: '' });
+            }
+        });
+    }, 250);
 }
 
 // Clear badge when changing tabs
