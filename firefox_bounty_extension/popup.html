@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BountySleuth</title>
+    <link rel="stylesheet" href="popup.css">
+</head>
+
+<body>
+    <div class="header">
+        <div class="header-left">
+            <h1>🔍 BountySleuth</h1>
+            <span class="badge">v3.2</span>
+        </div>
+        <div id="lastScan" class="last-scan"></div>
+    </div>
+
+    <div class="container">
+        <!-- Target Info -->
+        <div class="card target-card">
+            <div class="target-label">TARGET</div>
+            <div id="targetUrl" class="target-url">Loading...</div>
+        </div>
+
+        <!-- WAF/Server Fingerprint -->
+        <div class="card">
+            <h2 class="toggle" data-target="wafContent">
+                <span>📡 WAF & Server Fingerprint</span>
+                <span id="wafCount" class="count">0</span>
+            </h2>
+            <div class="content hidden" id="wafContent">
+                <ul id="waflist" class="list"></ul>
+            </div>
+        </div>
+
+        <!-- Security Headers -->
+        <div class="card">
+            <h2 class="toggle" data-target="headersContent">
+                <span>🔒 Security Headers</span>
+                <span id="headersCount" class="count">0</span>
+            </h2>
+            <div class="content hidden" id="headersContent">
+                <div id="headersMissing"></div>
+                <div id="headersPresent"></div>
+            </div>
+        </div>
+
+        <!-- CORS Analysis -->
+        <div class="card">
+            <h2 class="toggle" data-target="corsContent">
+                <span>🌐 CORS Misconfiguration</span>
+                <span id="corsStatus" class="count">—</span>
+            </h2>
+            <div class="content hidden" id="corsContent">
+                <div id="corsDetails" class="detail-box">No CORS headers detected.</div>
+            </div>
+        </div>
+
+        <!-- CSRF Analysis -->
+        <div class="card">
+            <h2 class="toggle" data-target="csrfContent">
+                <span>🛡️ CSRF Analysis</span>
+                <span id="csrfCount" class="count">0</span>
+            </h2>
+            <div class="content hidden" id="csrfContent">
+                <ul id="csrflist" class="list"></ul>
+            </div>
+        </div>
+
+        <!-- XSS/HTMLi Analysis -->
+        <div class="card">
+            <h2 class="toggle" data-target="xssContent">
+                <span>💉 XSS / Injection Vectors</span>
+                <span id="xssCount" class="count">0</span>
+            </h2>
+            <div class="content hidden" id="xssContent">
+                <ul id="xsslist" class="list"></ul>
+            </div>
+        </div>
+
+        <!-- DOM Sinks -->
+        <div class="card">
+            <h2 class="toggle" data-target="domContent">
+                <span>⚡ DOM Sinks</span>
+                <span id="domCount" class="count">0</span>
+            </h2>
+            <div class="content hidden" id="domContent">
+                <ul id="domlist" class="list"></ul>
+            </div>
+        </div>
+
+        <!-- Reflected Parameters -->
+        <div class="card">
+            <h2 class="toggle" data-target="reflectedContent">
+                <span>🔄 Reflected Parameters</span>
+                <span id="reflectedCount" class="count">0</span>
+            </h2>
+            <div class="content hidden" id="reflectedContent">
+                <ul id="reflectedlist" class="list"></ul>
+            </div>
+        </div>
+
+        <!-- PostMessage Analysis -->
+        <div class="card">
+            <h2 class="toggle" data-target="postMessageContent">
+                <span>📩 PostMessage Listeners</span>
+                <span id="postMessageCount" class="count">0</span>
+            </h2>
+            <div class="content hidden" id="postMessageContent">
+                <ul id="postmessagelist" class="list"></ul>
+            </div>
+        </div>
+
+        <!-- Sensitive Data Leaks -->
+        <div class="card">
+            <h2 class="toggle" data-target="leakContent">
+                <span>🔓 Sensitive Data Leaks</span>
+                <span id="leakCount" class="count">0</span>
+            </h2>
+            <div class="content hidden" id="leakContent">
+                <ul id="leaklist" class="list"></ul>
+            </div>
+        </div>
+
+        <!-- Cloud Infrastructure -->
+        <div class="card">
+            <h2 class="toggle" data-target="cloudContent">
+                <span>☁️ Cloud Assets (S3/Azure/GCP)</span>
+                <span id="cloudCount" class="count">0</span>
+            </h2>
+            <div class="content hidden" id="cloudContent">
+                <ul id="cloudlist" class="list"></ul>
+            </div>
+        </div>
+
+        <!-- Live APIs -->
+        <div class="card">
+            <h2 class="toggle" data-target="apiContent">
+                <span>📡 Live API Collector (cURL)</span>
+                <span id="apiCount" class="count">0</span>
+            </h2>
+            <div class="content hidden" id="apiContent">
+                <ul id="apilist" class="list"></ul>
+            </div>
+        </div>
+
+        <!-- Endpoint Map -->
+        <div class="card">
+            <h2 class="toggle" data-target="endpointContent">
+                <span>🗺️ Endpoint Map / JS</span>
+                <span id="endpointCount" class="count">0</span>
+            </h2>
+            <div class="content hidden" id="endpointContent">
+                <div style="margin-bottom: 8px; display: flex; gap: 8px;">
+                    <button id="copyEndpointsBtn" class="btn btn-secondary"
+                        style="font-size: 11px; padding: 3px 6px;">📋 Copy APIs</button>
+                    <button id="copyJsBtn" class="btn btn-secondary" style="font-size: 11px; padding: 3px 6px;">📋 Copy
+                        JS Links</button>
+                </div>
+                <div class="section-title">API Routes / Endpoints</div>
+                <ul id="endpointlist" class="list"></ul>
+                <div class="section-title" style="margin-top:10px;">JavaScript Files</div>
+                <ul id="jslist" class="list"></ul>
+            </div>
+        </div>
+
+        <!-- Cookie Security -->
+        <div class="card">
+            <h2 class="toggle" data-target="cookieContent">
+                <span>🍪 Cookie Security</span>
+                <span id="cookieCount" class="count">0</span>
+            </h2>
+            <div class="content hidden" id="cookieContent">
+                <ul id="cookielist" class="list"></ul>
+            </div>
+        </div>
+    </div>
+
+    <div class="footer">
+        <button id="rescanBtn" class="btn btn-primary">⟳ Rescan</button>
+        <button id="exportBtn" class="btn btn-secondary">📋 MD</button>
+        <button id="exportJsonBtn" class="btn btn-secondary">💾 JSON</button>
+        <button id="clearBtn" class="btn btn-danger">✕ Clear</button>
+    </div>
+
+    <script src="popup.js"></script>
+</body>
+
+</html>

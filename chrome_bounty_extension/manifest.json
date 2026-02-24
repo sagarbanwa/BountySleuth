@@ -1,0 +1,39 @@
+{
+    "manifest_version": 3,
+    "name": "BountySleuth - Web Sec Analyzer",
+    "version": "3.2",
+    "description": "Professional bug bounty companion v3.2. Universal scanner with WAF, CSRF, XSS, DOM Sinks, CORS, Cloud Detection, and Smart Payloads.",
+    "icons": {
+        "48": "icon.png",
+        "128": "icon.png"
+    },
+    "permissions": [
+        "activeTab",
+        "webRequest",
+        "storage",
+        "scripting",
+        "webNavigation"
+    ],
+    "host_permissions": [
+        "<all_urls>"
+    ],
+    "background": {
+        "service_worker": "background.js"
+    },
+    "content_scripts": [
+        {
+            "matches": [
+                "<all_urls>"
+            ],
+            "js": [
+                "content.js"
+            ],
+            "run_at": "document_end"
+        }
+    ],
+    "action": {
+        "default_popup": "popup.html",
+        "default_title": "BountySleuth Analyzer",
+        "default_icon": "icon.png"
+    }
+}

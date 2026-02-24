@@ -1,0 +1,33 @@
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon
+
+
+# IDEs / Editors
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+*.bak
+
+# Node (in case of future package.json)
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Builds and Archives
+releases/
+*.zip
+*.tar.gz
+*.rar
+
+# Extensions (if packaged extension files are created in root)
+*.crx
+*.xpi
+
+# Logs
+*.log
