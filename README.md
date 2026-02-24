@@ -19,6 +19,7 @@ BountySleuth performs real-time analysis across multiple attack vectors:
 * **📡 Live API Collector (cURL)**: Intercepts background XHR and Fetch requests, automatically generating ready-to-use cURL commands for deeper API testing.
 * **🗺️ Endpoint Map / JS**: Automatically maps discovered API routes and JavaScript files for easy extraction.
 * **🍪 Cookie Security**: Flags insecure session cookies (e.g., missing HttpOnly or Secure flags).
+* **🕷️ Burp Suite Extension**: A complementary Python script (`js_analyzer.py`) that brings strict JS endpoint and secret analysis directly into your Burp Suite workflow.
 
 ## 🛠️ Installation
 
