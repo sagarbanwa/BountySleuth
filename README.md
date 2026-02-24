@@ -43,7 +43,7 @@ BountySleuth performs real-time analysis across multiple attack vectors:
 
 ## 📦 Releases
 
-Pre-compiled files for both Google Chrome and Mozilla Firefox are available in the [releases](./releases) directory.
+Pre-compiled files for both Google Chrome and Mozilla Firefox are available in the [Releases](https://github.com/sagarbanwa/BountySleuth/releases) section of this repository.
 
 ## 📬 Contact
 
