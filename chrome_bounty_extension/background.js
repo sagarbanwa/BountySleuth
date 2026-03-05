@@ -408,7 +408,7 @@ class SimpleZipWriter {
     }
 }
 
-async function unpackSourceMap(url) {
+async function unpackSourceMap(url, hostname) {
     console.log('[BountySleuth] Starting unpack for:', url);
 
     const resp = await fetch(url);
@@ -471,7 +471,7 @@ async function unpackSourceMap(url) {
     const zipData = zip.toUint8Array();
     const blob = new Blob([zipData], { type: 'application/zip' });
     const blobUrl = URL.createObjectURL(blob);
-    const baseName = mapFileName.replace('.js.map', '').replace('.css.map', '').replace('.map', '');
+    const baseName = hostname || mapFileName.replace('.js.map', '').replace('.css.map', '').replace('.map', '');
 
     return new Promise((resolve, reject) => {
         chrome.downloads.download({
@@ -511,7 +511,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         }
         sendResponse({ status: 'download_started' });
     } else if (request.action === 'unpackSourceMap' && request.url) {
-        unpackSourceMap(request.url)
+        unpackSourceMap(request.url, request.hostname)
             .then(() => sendResponse({ status: 'unpack_started' }))
             .catch(err => sendResponse({ status: 'error', message: err.message }));
         return true; // Keep channel open for async response

@@ -717,7 +717,8 @@ function renderSourceMaps(data) {
             unpackBtn.onclick = (e) => {
                 e.stopPropagation();
                 unpackBtn.textContent = '⏳ Unpacking...';
-                chrome.runtime.sendMessage({ action: 'unpackSourceMap', url: sm.mapUrl }, (response) => {
+                const hostname = new URL(sm.mapUrl).hostname;
+                chrome.runtime.sendMessage({ action: 'unpackSourceMap', url: sm.mapUrl, hostname: hostname }, (response) => {
                     if (response && response.status === 'error') {
                         unpackBtn.textContent = '❌ Error';
                         console.error("Unpack error:", response.message);
