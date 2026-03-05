@@ -38,5 +38,11 @@
         "default_popup": "popup.html",
         "default_title": "BountySleuth Analyzer",
         "default_icon": "icon.png"
+    },
+    "browser_specific_settings": {
+        "gecko": {
+            "id": "bountysleuth@sagarbanwa.com",
+            "strict_min_version": "109.0"
+        }
     }
 }
