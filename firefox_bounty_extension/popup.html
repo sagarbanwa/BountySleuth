@@ -12,7 +12,7 @@
     <div class="header">
         <div class="header-left">
             <h1>🔍 BountySleuth</h1>
-            <span class="version-badge">v3.4</span>
+            <span class="version-badge">v3.5</span>
         </div>
         <div id="lastScan" class="last-scan"></div>
     </div>
@@ -176,8 +176,24 @@
                 <div style="margin-bottom: 8px; display: flex; gap: 8px;">
                     <button id="downloadAllMapsBtn" class="btn btn-secondary"
                         style="font-size: 11px; padding: 3px 6px;">⬇️ Download All Accessible</button>
+                    <button id="analyzePackagesBtn" class="btn btn-secondary"
+                        style="font-size: 11px; padding: 3px 6px;">📦 Analyze NPM Packages</button>
                 </div>
                 <ul id="sourcemaplist" class="list"></ul>
+            </div>
+        </div>
+
+        <!-- NPM Package Analyzer -->
+        <div class="card">
+            <h2 class="toggle" data-target="npmContent">
+                <span>📦 NPM Package Analyzer</span>
+                <span id="npmCount" class="count">0</span>
+            </h2>
+            <div class="content hidden" id="npmContent">
+                <div id="npmSummary" style="font-size: 11px; margin-bottom: 8px; color: var(--text-secondary);">
+                    Discovered packages from source maps. Checking against npm registry...
+                </div>
+                <ul id="npmlist" class="list"></ul>
             </div>
         </div>
 

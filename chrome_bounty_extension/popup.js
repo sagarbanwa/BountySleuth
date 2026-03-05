@@ -70,6 +70,72 @@ document.addEventListener('DOMContentLoaded', () => {
             });
         });
     });
+
+    // Analyze NPM Packages
+    document.getElementById('analyzePackagesBtn').addEventListener('click', () => {
+        const btn = document.getElementById('analyzePackagesBtn');
+        const originalText = btn.textContent;
+        btn.textContent = '⏳ Analyzing...';
+        btn.disabled = true;
+
+        chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+            const url = new URL(tabs[0].url);
+            const host = url.hostname;
+            chrome.storage.local.get([host], (result) => {
+                const data = result[host] || {};
+                const maps = data.sourcemaps || [];
+                const allPackages = [];
+
+                maps.forEach(m => {
+                    if (m.analysis && m.analysis.packages) {
+                        m.analysis.packages.forEach(p => {
+                            if (!allPackages.some(ap => ap.name === p.name)) {
+                                allPackages.push(p);
+                            }
+                        });
+                    }
+                });
+
+                if (allPackages.length === 0) {
+                    btn.textContent = '📦 No packages found';
+                    setTimeout(() => {
+                        btn.textContent = originalText;
+                        btn.disabled = false;
+                    }, 2000);
+                    return;
+                }
+
+                chrome.runtime.sendMessage({ action: 'checkNpmPackages', packages: allPackages }, (response) => {
+                    if (response && response.status === 'done') {
+                        data.npm_analysis = response.results;
+                        const updateObj = {};
+                        updateObj[host] = data;
+                        chrome.storage.local.set(updateObj, () => {
+                            renderNpmPackages(data);
+                            btn.textContent = '📦 Analysis Complete';
+                            // Automatically open the NPM section
+                            const npmHeader = document.querySelector('[data-target="npmContent"]');
+                            const npmContent = document.getElementById('npmContent');
+                            if (npmContent.classList.contains('hidden')) {
+                                npmContent.classList.remove('hidden');
+                                npmHeader.classList.add('open');
+                            }
+                            setTimeout(() => {
+                                btn.textContent = originalText;
+                                btn.disabled = false;
+                            }, 2000);
+                        });
+                    } else {
+                        btn.textContent = '❌ Error';
+                        setTimeout(() => {
+                            btn.textContent = originalText;
+                            btn.disabled = false;
+                        }, 2000);
+                    }
+                });
+            });
+        });
+    });
 });
 
 function loadData(host) {
@@ -96,6 +162,7 @@ function loadData(host) {
         renderLiveApis(data);
         renderEndpoints(data);
         renderSourceMaps(data);
+        renderNpmPackages(data);
 
         // Render JS Protections badge if found
         renderProtections(data);
@@ -572,17 +639,20 @@ function renderLiveApis(data) {
 function renderEndpoints(data) {
     const endpoints = data.endpoints || [];
     const jsFiles = data.js_files || [];
-    setCount('endpointCount', endpoints.length + jsFiles.length, endpoints.length + jsFiles.length > 0 ? 'low' : null);
+    setCount('endpointCount', endpoints.length + jsFiles.length, (endpoints.length + jsFiles.length) > 0 ? 'info' : null);
 
     const elist = document.getElementById('endpointlist');
     const jlist = document.getElementById('jslist');
+    elist.innerHTML = '';
+    jlist.innerHTML = '';
 
     if (endpoints.length === 0) {
-        elist.innerHTML = '<li class="empty-state">No endpoints mined yet.</li>';
+        elist.innerHTML = '<li class="empty-state">No API endpoints collected.</li>';
     } else {
-        elist.innerHTML = '';
-        endpoints.forEach(e => {
+        const sorted = [...new Set(endpoints)].sort();
+        sorted.forEach(e => {
             const li = createListItem(e, 'info');
+            li.style.wordBreak = 'break-all';
             elist.appendChild(li);
         });
     }
@@ -590,19 +660,68 @@ function renderEndpoints(data) {
     if (jsFiles.length === 0) {
         jlist.innerHTML = '<li class="empty-state">No JavaScript files found.</li>';
     } else {
-        jlist.innerHTML = '';
-        jsFiles.forEach(js => {
-            const li = createListItem(js, 'medium');
+        const sorted = [...new Set(jsFiles)].sort();
+        sorted.forEach(j => {
+            const li = createListItem(j, 'info');
+            li.style.wordBreak = 'break-all';
             jlist.appendChild(li);
         });
     }
+}
 
-    // Bind copy buttons
-    const btnE = document.getElementById('copyEndpointsBtn');
-    if (btnE) btnE.onclick = () => copyToClipboard(endpoints.join('\n'), 'copyEndpointsBtn');
+// ---- NPM Packages ----
+function renderNpmPackages(data) {
+    const packages = data.npm_analysis || [];
+    const issues = packages.filter(p => p.severity === 'HIGH');
+    setCount('npmCount', packages.length, issues.length > 0 ? 'high' : (packages.length > 0 ? 'info' : null));
 
-    const btnJ = document.getElementById('copyJsBtn');
-    if (btnJ) btnJ.onclick = () => copyToClipboard(jsFiles.join('\n'), 'copyJsBtn');
+    const list = document.getElementById('npmlist');
+    const summary = document.getElementById('npmSummary');
+    list.innerHTML = '';
+
+    if (packages.length === 0) {
+        list.innerHTML = '<li class="empty-state">No package analysis found. Click "Analyze NPM Packages" in the Source Map section.</li>';
+        summary.textContent = 'Packages found in source maps will appear here if you run analysis.';
+        return;
+    }
+
+    const privateCount = packages.filter(p => !p.isPublic).length;
+    summary.textContent = `Found ${packages.length} packages. ${privateCount} appear to be private/internal.`;
+
+    packages.forEach(pkg => {
+        const sevClass = pkg.severity === 'HIGH' ? 'high' : 'info';
+        let text = `${pkg.name} (${pkg.fileCount} files)`;
+        if (pkg.isPublic) {
+            text += `\n📦 Public: v${pkg.latestVersion}`;
+        } else if (pkg.isPublic === false) {
+            text += `\n🚨 PRIVATE / INTERNAL PACKAGE`;
+            text += `\n⚠️ Potential Dependency Confusion target!`;
+        } else {
+            text += `\n❓ Status: ${pkg.error || 'Unknown'}`;
+        }
+
+        const li = createListItem(text, sevClass);
+        if (pkg.severity === 'HIGH') {
+            li.appendChild(createSevTag('HIGH'));
+        } else if (pkg.isPublic) {
+            const tag = document.createElement('span');
+            tag.className = 'sev-tag info';
+            tag.style.marginLeft = '4px';
+            tag.textContent = 'PUBLIC';
+            li.appendChild(tag);
+        }
+
+        if (pkg.npmUrl) {
+            li.style.cursor = 'pointer';
+            li.title = 'Click to view on npmjs.com';
+            li.onclick = (e) => {
+                e.stopPropagation();
+                window.open(pkg.npmUrl, '_blank');
+            };
+        }
+
+        list.appendChild(li);
+    });
 }
 
 // ---- Source Maps (v3.3 Enhanced) ----
@@ -941,6 +1060,18 @@ function generateReport(host, data) {
         }
     });
     if (sourcemaps.length === 0) report += `- None detected\n`;
+    report += `\n`;
+
+    // NPM Packages
+    const npms = data.npm_analysis || [];
+    const internal = npms.filter(p => p.isPublic === false);
+    report += `## NPM Packages (${npms.length} found, ${internal.length} internal)\n`;
+    npms.forEach(p => {
+        const status = p.isPublic ? 'PUBLIC' : (p.isPublic === false ? '🚨 PRIVATE' : '❓ UNKNOWN');
+        report += `- [${p.severity || 'INFO'}] ${p.name} | ${status}${p.latestVersion ? ' (v' + p.latestVersion + ')' : ''}\n`;
+        if (p.isPublic === false) report += `  ⚠️ Potential Dependency Confusion Target!\n`;
+    });
+    if (npms.length === 0) report += `- No NPM analysis performed\n`;
     report += `\n`;
 
     return report;

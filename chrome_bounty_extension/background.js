@@ -515,6 +515,70 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
             .then(() => sendResponse({ status: 'unpack_started' }))
             .catch(err => sendResponse({ status: 'error', message: err.message }));
         return true; // Keep channel open for async response
+    } else if (request.action === 'checkNpmPackages' && request.packages) {
+        // Check packages against npm registry
+        (async () => {
+            const results = [];
+            const packages = request.packages.slice(0, 100); // Limit to 100 packages
+
+            for (const pkg of packages) {
+                try {
+                    const encodedName = pkg.name.replace('/', '%2F');
+                    const resp = await fetch(`https://registry.npmjs.org/${encodedName}`, {
+                        method: 'GET',
+                        headers: { 'Accept': 'application/json' }
+                    });
+
+                    if (resp.ok) {
+                        const data = await resp.json();
+                        const latestVersion = data['dist-tags'] ? data['dist-tags'].latest : 'unknown';
+                        results.push({
+                            name: pkg.name,
+                            fileCount: pkg.fileCount,
+                            isScoped: pkg.isScoped,
+                            isPublic: true,
+                            npmUrl: `https://www.npmjs.com/package/${pkg.name}`,
+                            description: (data.description || '').substring(0, 100),
+                            latestVersion,
+                            severity: 'OK'
+                        });
+                    } else if (resp.status === 404) {
+                        // Package NOT on public npm — potential dependency confusion!
+                        results.push({
+                            name: pkg.name,
+                            fileCount: pkg.fileCount,
+                            isScoped: pkg.isScoped,
+                            isPublic: false,
+                            npmUrl: null,
+                            description: null,
+                            latestVersion: null,
+                            severity: 'HIGH'
+                        });
+                    } else {
+                        results.push({
+                            name: pkg.name,
+                            fileCount: pkg.fileCount,
+                            isScoped: pkg.isScoped,
+                            isPublic: null,
+                            severity: 'UNKNOWN',
+                            error: `HTTP ${resp.status}`
+                        });
+                    }
+                } catch (e) {
+                    results.push({
+                        name: pkg.name,
+                        fileCount: pkg.fileCount,
+                        isScoped: pkg.isScoped,
+                        isPublic: null,
+                        severity: 'UNKNOWN',
+                        error: e.message
+                    });
+                }
+            }
+
+            sendResponse({ status: 'done', results });
+        })();
+        return true; // Keep channel open for async
     }
     return true;
 });

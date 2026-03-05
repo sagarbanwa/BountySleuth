@@ -342,6 +342,17 @@ h2.toggle.open {
     color: var(--success);
 }
 
+.sev-tag.info {
+    background: rgba(110, 118, 129, 0.2);
+    color: var(--text-secondary);
+}
+
+/* Clickable list items */
+.list li[style*="cursor: pointer"]:hover {
+    background-color: var(--bg-hover);
+    border-color: var(--accent);
+}
+
 /* ---- Detail box ---- */
 .detail-box {
     font-family: var(--font-mono);

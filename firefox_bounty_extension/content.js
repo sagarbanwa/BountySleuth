@@ -1149,6 +1149,28 @@ async function scanSourceMaps(findings) {
                     (s.endsWith('.js') || s.endsWith('.ts') || s.endsWith('.jsx') || s.endsWith('.tsx') || s.endsWith('.vue') || s.endsWith('.svelte'))
                 );
 
+                // Extract npm packages from node_modules paths
+                const packageMap = {};
+                sources.forEach(s => {
+                    // Normalize webpack:// prefixes
+                    const normalized = s
+                        .replace(/^webpack:\/\/\//i, '')
+                        .replace(/^webpack:\/\/[^/]*\//i, '')
+                        .replace(/^\.\//g, '');
+
+                    // Match node_modules/package or node_modules/@scope/package
+                    const nmMatch = normalized.match(/node_modules\/((?:@[^/]+\/)?[^/]+)/);
+                    if (nmMatch) {
+                        const pkgName = nmMatch[1];
+                        if (!packageMap[pkgName]) {
+                            packageMap[pkgName] = { name: pkgName, fileCount: 0, isScoped: pkgName.startsWith('@') };
+                        }
+                        packageMap[pkgName].fileCount++;
+                    }
+                });
+
+                const packages = Object.values(packageMap).sort((a, b) => b.fileCount - a.fileCount);
+
                 return {
                     sourceCount,
                     framework,
@@ -1156,7 +1178,8 @@ async function scanSourceMaps(findings) {
                     sourceContentCount,
                     totalSize: text.length,
                     interestingFiles: interestingPaths.length,
-                    sampleSources: interestingPaths.slice(0, 5)
+                    sampleSources: interestingPaths.slice(0, 5),
+                    packages: packages
                 };
             } catch (parseErr) {
                 return { sourceCount: 0, framework: 'parse-error', totalSize: text.length };
