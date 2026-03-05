@@ -1141,7 +1141,7 @@ async function scanSourceMaps(findings) {
             if (headerMap) {
                 const resolved = resolveMapUrl(headerMap, href);
                 if (resolved && resolved.type === 'url') {
-                    await addFinding(href, resolved.url, 'CSS SourceMap header', false);
+                    await addFinding(href, resolved.url, 'CSS SourceMap header', true);
                 }
             }
 
@@ -1151,7 +1151,7 @@ async function scanSourceMaps(findings) {
             while ((match = cssSourceMappingRegex.exec(text)) !== null) {
                 const resolved = resolveMapUrl(match[1], href);
                 if (resolved && resolved.type === 'url') {
-                    await addFinding(href, resolved.url, 'CSS sourceMappingURL', false);
+                    await addFinding(href, resolved.url, 'CSS sourceMappingURL', true);
                 }
             }
 
@@ -1160,7 +1160,7 @@ async function scanSourceMaps(findings) {
             if (!seenMapUrls.has(cssMapUrl)) {
                 const probeValid = await validateMap(cssMapUrl);
                 if (probeValid.accessible) {
-                    await addFinding(href, cssMapUrl, 'CSS .map probe', false);
+                    await addFinding(href, cssMapUrl, 'CSS .map probe', true);
                 }
             }
         } catch (e) { /* ignore */ }

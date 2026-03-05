@@ -713,7 +713,7 @@ function renderSourceMaps(data) {
             const unpackBtn = document.createElement('button');
             unpackBtn.className = 'payload-copy-btn sourcemap-unpack-btn';
             unpackBtn.textContent = '📦 Unpack ZIP';
-            unpackBtn.style.display = (sm.mapUrl !== '(inline data: URI)' && sm.analysis && sm.analysis.hasSourceContent) ? 'inline-block' : 'none';
+            unpackBtn.style.display = (sm.mapUrl !== '(inline data: URI)') ? 'inline-block' : 'none';
             unpackBtn.onclick = (e) => {
                 e.stopPropagation();
                 unpackBtn.textContent = '⏳ Unpacking...';
