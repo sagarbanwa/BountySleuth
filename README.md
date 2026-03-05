@@ -2,6 +2,8 @@
 
 **BountySleuth** is a professional bug bounty companion and universal web security scanner available as a browser extension for both Chrome and Firefox. It passively monitors and actively analyzes web applications for common vulnerabilities, misconfigurations, and sensitive data exposures while you browse.
 
+> **Developed by [Security0x0 Research And Development Private Limited](mailto:contact@secuirty0x0.com)**
+
 |               Dashboard Explorer                |             Analysis & Endpoints              |
 | :---------------------------------------------: | :-------------------------------------------: |
 | ![BountySleuth Dashboard](assets/dashboard.png) | ![BountySleuth Features](assets/features.png) |
@@ -22,7 +24,7 @@ BountySleuth performs real-time analysis across multiple attack vectors:
 * **☁️ Cloud Infrastructure**: Identifies cloud assets, storage buckets (S3, Azure Blob, GCP Storage), and signed URLs exposed in the application.
 * **📡 Live API Collector (cURL)**: Intercepts background XHR and Fetch requests, automatically generating ready-to-use cURL commands for deeper API testing.
 * **🗺️ Endpoint Map / JS**: Automatically maps discovered API routes and JavaScript files for easy extraction.
-* **🗺️ Source Map Detector**: Discovers exposed JavaScript source maps (`.map` files), validates accessibility, and enables one-click download of original source code.
+* **🗺️ Source Map Detector & Unpacker**: Discovers exposed JavaScript/CSS source maps (`.map` files), validates accessibility, analyzes frameworks, and enables **one-click ZIP download** of fully reconstructed original source code (`src_unpacked/`).
 * **🍪 Cookie Security**: Flags insecure session cookies (e.g., missing HttpOnly or Secure flags).
 
 ## 🛠️ Installation
@@ -52,7 +54,25 @@ Pre-compiled files for both Google Chrome and Mozilla Firefox are available in t
 
 ## 📬 Contact
 
-For questions or feedback, reach out on X/Twitter: [x.com/sagarbanwa](https://x.com/sagarbanwa)
+**Security0x0 Research And Development Private Limited**  
+📧 Email: [contact@secuirty0x0.com](mailto:contact@secuirty0x0.com)  
+🐦 Twitter: [x.com/sagarbanwa](https://x.com/sagarbanwa)
+
+## 📝 Changelog
+
+### v3.4 — Source Map Unpacker & Bug Fixes
+- ✨ **New: Source Map Unpacker (📦 Unpack ZIP)** — Reconstructs full original source directories from `.map` files and downloads them as a structured `.zip` with a `src_unpacked/` root folder.
+- 🐛 **Fix: ZIP download now works** — Replaced `FileReader.readAsDataURL()` with `URL.createObjectURL()` for Manifest V3 service worker compatibility.
+- 🐛 **Fix: Unpack ZIP button always visible** — Removed conditional display logic that hid the button when analysis data wasn't available.
+- 🐛 **Fix: CSS source maps now fully analyzed** — Enabled deep content analysis for CSS `.map` files (previously skipped).
+- 🐛 **Fix: Release ZIP corruption** — Added `.gitattributes` binary markers to prevent Git from corrupting ZIP files.
+- 🏷️ **Branding: Security0x0 Research And Development Private Limited** — Added developer attribution and contact email across all UI elements.
+
+### v3.3 — Source Map Detector
+- ✨ Advanced source map discovery (JS, CSS, HTTP headers, webpack/Next.js/Nuxt probing)
+- ✨ Deep analysis: framework detection, source count, embedded code leak warnings
+- ✨ One-click download of individual `.map` files
+- 🐛 Fixed release ZIP corruption via `.gitattributes`
 
 ## ⚠️ Disclaimer
 
