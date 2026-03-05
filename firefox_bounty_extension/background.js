@@ -409,63 +409,88 @@ class SimpleZipWriter {
 }
 
 async function unpackSourceMap(url) {
+    console.log('[BountySleuth] Starting unpack for:', url);
+
+    const resp = await fetch(url);
+    if (!resp.ok) throw new Error(`Failed to fetch source map: HTTP ${resp.status}`);
+
+    const text = await resp.text();
+    console.log('[BountySleuth] Fetched source map, size:', text.length);
+
+    let map;
     try {
-        const resp = await fetch(url);
-        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-        const map = await resp.json();
-
-        if (!map.sources || !map.sourcesContent) {
-            throw new Error("Source map does not contain embedded sourcesContent.");
-        }
-
-        const zip = new SimpleZipWriter();
-
-        // Add the map itself (inside src_unpacked)
-        const mapFileName = url.split('/').pop().split('?')[0] || 'source.map';
-        zip.addFile('src_unpacked/' + mapFileName, JSON.stringify(map, null, 2));
-
-        // Reconstruct files
-        for (let i = 0; i < map.sources.length; i++) {
-            let sourcePath = map.sources[i];
-            const content = map.sourcesContent[i];
-
-            if (!content) continue;
-
-            // Normalize path
-            sourcePath = sourcePath
-                .replace(/^webpack:\/\/\//i, '')
-                .replace(/^webpack:\/\/.*?\//i, '')
-                .replace(/^ng:\/\//i, '')
-                .replace(/^\.\//, '')
-                .replace(/^\.\.\//g, 'parent/')
-                .replace(/^[a-z]:\//i, '') // Remove drive letters
-                .split('?')[0];
-
-            zip.addFile('src_unpacked/' + sourcePath, content);
-        }
-
-        const zipBuffer = zip.toUint8Array();
-        const blob = new Blob([zipBuffer], { type: 'application/zip' });
-        const reader = new FileReader();
-
-        return new Promise((resolve, reject) => {
-            reader.onload = () => {
-                const dataUrl = reader.result;
-                const baseName = mapFileName.replace('.js.map', '').replace('.map', '');
-                chrome.downloads.download({
-                    url: dataUrl,
-                    filename: `BountySleuth_Unpacked/${baseName}_source_code.zip`,
-                    saveAs: false
-                }, () => resolve());
-            };
-            reader.onerror = () => reject(new Error("Failed to read zip blob"));
-            reader.readAsDataURL(blob);
-        });
-
+        map = JSON.parse(text);
     } catch (e) {
-        console.error('BountySleuth unpack error:', e);
-        throw e;
+        throw new Error('Source map is not valid JSON');
     }
+
+    if (!map.sources || map.sources.length === 0) {
+        throw new Error('Source map has no sources array');
+    }
+
+    if (!map.sourcesContent || map.sourcesContent.length === 0) {
+        throw new Error('Source map does not contain embedded sourcesContent — cannot unpack');
+    }
+
+    const zip = new SimpleZipWriter();
+
+    // Add the .map file itself inside src_unpacked
+    const mapFileName = url.split('/').pop().split('?')[0] || 'source.map';
+    zip.addFile('src_unpacked/' + mapFileName, text);
+
+    // Reconstruct all source files
+    let addedCount = 0;
+    for (let i = 0; i < map.sources.length; i++) {
+        const content = map.sourcesContent[i];
+        if (!content) continue;
+
+        let sourcePath = map.sources[i];
+        // Normalize paths from various bundlers
+        sourcePath = sourcePath
+            .replace(/^webpack:\/\/\//i, '')
+            .replace(/^webpack:\/\/[^/]*\//i, '')
+            .replace(/^ng:\/\//i, '')
+            .replace(/^\.\//g, '')
+            .replace(/^\.\.\//g, 'parent/')
+            .replace(/^[a-z]:\//i, '')
+            .split('?')[0];
+
+        // Skip empty paths
+        if (!sourcePath || sourcePath === '') continue;
+
+        zip.addFile('src_unpacked/' + sourcePath, content);
+        addedCount++;
+    }
+
+    console.log('[BountySleuth] Added', addedCount, 'source files to ZIP');
+
+    if (addedCount === 0) {
+        throw new Error('No source files with content found in the map');
+    }
+
+    const zipData = zip.toUint8Array();
+    const blob = new Blob([zipData], { type: 'application/zip' });
+    const blobUrl = URL.createObjectURL(blob);
+    const baseName = mapFileName.replace('.js.map', '').replace('.css.map', '').replace('.map', '');
+
+    return new Promise((resolve, reject) => {
+        chrome.downloads.download({
+            url: blobUrl,
+            filename: `BountySleuth_Unpacked/${baseName}_source_code.zip`,
+            saveAs: false
+        }, (downloadId) => {
+            // Clean up the blob URL after a delay
+            setTimeout(() => URL.revokeObjectURL(blobUrl), 60000);
+
+            if (chrome.runtime.lastError) {
+                console.error('[BountySleuth] Download error:', chrome.runtime.lastError);
+                reject(new Error(chrome.runtime.lastError.message));
+            } else {
+                console.log('[BountySleuth] Download started, ID:', downloadId);
+                resolve({ downloadId, fileCount: addedCount });
+            }
+        });
+    });
 }
 
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
