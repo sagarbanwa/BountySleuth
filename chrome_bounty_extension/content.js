@@ -391,7 +391,7 @@ async function scanPage() {
     saveFindings(findings);
 }
 
-// ---- CSRF Scanner ----
+// ---- CSRF Scanner (Enhanced v3.4) ----
 function scanCSRF(findings) {
     const forms = document.querySelectorAll('form');
 
@@ -399,6 +399,7 @@ function scanCSRF(findings) {
     const globalMetaToken = document.querySelector(
         'meta[name="csrf-token"], meta[name="xsrf-token"], meta[name="csrf-param"], meta[name="_token"]'
     );
+    const globalMetaValue = globalMetaToken ? (globalMetaToken.getAttribute('content') || '') : '';
 
     // Check global JS variables for tokens
     let globalJsToken = false;
@@ -412,20 +413,38 @@ function scanCSRF(findings) {
         });
     } catch (e) { /* safe to continue */ }
 
+    // Check SameSite cookie protection
+    let hasSameSiteCookie = false;
+    try {
+        const cookies = document.cookie.split(';');
+        // We can't directly read SameSite from JS, but we can note cookie presence
+        hasSameSiteCookie = false; // Can't reliably detect SameSite from JS
+    } catch (e) { /* ignore */ }
+
+    // Collect all token values to detect static/duplicate tokens
+    const allTokenValues = [];
+
     forms.forEach(form => {
         const method = (form.getAttribute('method') || 'GET').toUpperCase();
         if (method === 'GET') return;
 
+        const action = form.getAttribute('action') || window.location.pathname;
+        const formId = form.getAttribute('id') || form.getAttribute('name') || 'unnamed';
+        const inputCount = form.querySelectorAll('input, textarea, select').length;
+
         let hasToken = false;
         let tokenSource = '';
+        let tokenValue = '';
+        let tokenIssues = [];
 
-        // Check hidden inputs
+        // Check hidden inputs for CSRF tokens
         form.querySelectorAll('input[type="hidden"]').forEach(input => {
             const name = (input.name || '').toLowerCase();
             const id = (input.id || '').toLowerCase();
             if (CSRF_TOKEN_NAMES.some(t => name.includes(t) || id.includes(t))) {
                 hasToken = true;
                 tokenSource = `hidden input: ${input.name}`;
+                tokenValue = input.value || '';
             }
         });
 
@@ -433,12 +452,14 @@ function scanCSRF(findings) {
         if (!hasToken && globalMetaToken) {
             hasToken = true;
             tokenSource = `meta tag: ${globalMetaToken.getAttribute('name')}`;
+            tokenValue = globalMetaValue;
         }
 
         // Check global JS variable
         if (!hasToken && globalJsToken) {
             hasToken = true;
             tokenSource = 'inline JS variable';
+            tokenValue = '(dynamic)';
         }
 
         // Check data attributes on form
@@ -448,40 +469,156 @@ function scanCSRF(findings) {
                 if (/csrf|token|nonce/i.test(attr)) {
                     hasToken = true;
                     tokenSource = `form attribute: ${attr}`;
+                    tokenValue = form.getAttribute(attr) || '';
                 }
             });
         }
 
+        // Detect sensitive form actions
+        const actionLower = action.toLowerCase();
+        const isSensitiveAction = /login|logout|register|signup|password|reset|change|update|delete|remove|transfer|payment|pay|checkout|admin|settings|profile|account/i.test(actionLower);
+        const formHtml = form.innerHTML.toLowerCase();
+        const hasSensitiveFields = /password|email|card|cvv|ssn|credit|bank|amount|transfer/i.test(formHtml);
+
         if (!hasToken) {
-            const action = form.getAttribute('action') || window.location.pathname;
-            const formId = form.getAttribute('id') || form.getAttribute('name') || 'unnamed';
-            const inputCount = form.querySelectorAll('input, textarea, select').length;
+            // ===== NO TOKEN FOUND =====
+            let verdict = '🚨 CSRF POSSIBLE — No anti-CSRF token found';
+            let severity = 'HIGH';
+
+            if (isSensitiveAction || hasSensitiveFields) {
+                verdict = '🚨 CSRF CRITICAL — Sensitive form has NO anti-CSRF token';
+                severity = 'CRITICAL';
+            }
 
             findings.csrf.push({
-                action: action,
-                method: method,
-                formId: formId,
-                inputCount: inputCount,
-                severity: method === 'POST' ? 'HIGH' : 'MEDIUM'
+                action,
+                method,
+                formId,
+                inputCount,
+                severity,
+                verdict,
+                reason: 'No CSRF token (hidden input, meta tag, or JS variable) detected',
+                sensitive: isSensitiveAction || hasSensitiveFields,
+                note: isSensitiveAction ? `⚠️ Sensitive action detected: ${action}` : null
             });
+        } else {
+            // ===== TOKEN FOUND — CHECK QUALITY =====
+            if (tokenValue && tokenValue !== '(dynamic)') {
+                allTokenValues.push(tokenValue);
+
+                // Check token length (short tokens are weak)
+                if (tokenValue.length < 16) {
+                    tokenIssues.push(`Too short (${tokenValue.length} chars, need ≥16)`);
+                }
+
+                // Check token entropy (all same chars, sequential, or simple patterns)
+                if (/^[0-9]+$/.test(tokenValue)) {
+                    tokenIssues.push('Numeric only — predictable');
+                }
+                if (/^(.)\1+$/.test(tokenValue)) {
+                    tokenIssues.push('All identical characters — zero entropy');
+                }
+                if (/^(0123|1234|abcd|test|demo|sample|csrf)/i.test(tokenValue)) {
+                    tokenIssues.push('Common/predictable pattern detected');
+                }
+
+                // Check if token looks like a timestamp
+                if (/^1[0-9]{9,12}$/.test(tokenValue)) {
+                    tokenIssues.push('Appears to be a timestamp — predictable');
+                }
+
+                // Check for empty or placeholder tokens
+                if (tokenValue.trim() === '' || tokenValue === 'null' || tokenValue === 'undefined' || tokenValue === '0') {
+                    tokenIssues.push('Empty/null token value');
+                }
+
+                // Check for base64 with very low entropy
+                const uniqueChars = new Set(tokenValue.split('')).size;
+                if (tokenValue.length > 10 && uniqueChars < 5) {
+                    tokenIssues.push(`Very low entropy (only ${uniqueChars} unique chars)`);
+                }
+            }
+
+            if (tokenIssues.length > 0) {
+                // ===== WEAK TOKEN =====
+                findings.csrf.push({
+                    action,
+                    method,
+                    formId,
+                    inputCount,
+                    severity: 'MEDIUM',
+                    verdict: '⚠️ CSRF POSSIBLE — Weak token detected',
+                    reason: tokenIssues.join('; '),
+                    tokenSource,
+                    tokenPreview: tokenValue.substring(0, 20) + (tokenValue.length > 20 ? '...' : ''),
+                    sensitive: isSensitiveAction || hasSensitiveFields,
+                    note: tokenIssues.join(' | ')
+                });
+            } else {
+                // ===== TOKEN LOOKS OK — report as protected =====
+                findings.csrf.push({
+                    action,
+                    method,
+                    formId,
+                    inputCount,
+                    severity: 'OK',
+                    verdict: '✅ CSRF Protected',
+                    reason: `Token found via ${tokenSource}`,
+                    tokenSource,
+                    tokenPreview: tokenValue.substring(0, 10) + '***',
+                    sensitive: isSensitiveAction || hasSensitiveFields
+                });
+            }
         }
     });
 
+    // Check for duplicate/static tokens across forms (sign of no server-side rotation)
+    if (allTokenValues.length > 1) {
+        const uniqueTokens = new Set(allTokenValues);
+        if (uniqueTokens.size === 1) {
+            findings.csrf.push({
+                action: '(all forms)',
+                method: 'ALL',
+                formId: 'global',
+                inputCount: 0,
+                severity: 'MEDIUM',
+                verdict: '⚠️ Static CSRF Token — Same token across all forms',
+                reason: `All ${allTokenValues.length} forms share the same token — may not be rotated per-request`,
+                note: 'Static tokens are vulnerable to token fixation attacks'
+            });
+        }
+    }
+
     // Check if AJAX requests lack CSRF headers (intercept prototype)
     checkAjaxCSRF(findings);
+
+    // Check for forms using GET for sensitive actions
+    document.querySelectorAll('form').forEach(form => {
+        const method = (form.getAttribute('method') || 'GET').toUpperCase();
+        const action = (form.getAttribute('action') || '').toLowerCase();
+        if (method === 'GET' && /login|password|delete|transfer|payment|admin/i.test(action)) {
+            findings.csrf.push({
+                action: form.getAttribute('action') || window.location.pathname,
+                method: 'GET',
+                formId: form.getAttribute('id') || 'unnamed',
+                inputCount: form.querySelectorAll('input').length,
+                severity: 'MEDIUM',
+                verdict: '⚠️ Sensitive action using GET method',
+                reason: 'GET requests are susceptible to CSRF via img/link tags and browser history exposure',
+                note: 'Should use POST with anti-CSRF token'
+            });
+        }
+    });
 }
 
 // Intercept XHR/fetch to see if they carry CSRF headers
 function checkAjaxCSRF(findings) {
-    // We can't fully intercept without injecting into the page context,
-    // but we can check if common AJAX frameworks set up default headers
     try {
         const scriptTags = document.querySelectorAll('script:not([src])');
         let hasAjaxCSRFSetup = false;
 
         scriptTags.forEach(s => {
             const text = s.textContent;
-            // Check for axios defaults, jQuery ajaxSetup, fetch wrappers
             if (/axios\.defaults\.headers.*csrf/i.test(text)) hasAjaxCSRFSetup = true;
             if (/\$\.ajaxSetup.*headers.*csrf/i.test(text)) hasAjaxCSRFSetup = true;
             if (/beforeSend.*setRequestHeader.*csrf/i.test(text)) hasAjaxCSRFSetup = true;
@@ -489,16 +626,18 @@ function checkAjaxCSRF(findings) {
         });
 
         if (!hasAjaxCSRFSetup && document.querySelectorAll('form[method="POST"]').length === 0) {
-            // SPA with no forms and no visible CSRF setup -> flag it
-            const xhrScripts = document.querySelectorAll('script[src*="axios"], script[src*="jquery"]');
-            if (xhrScripts.length > 0) {
+            const xhrScripts = document.querySelectorAll('script[src*="axios"], script[src*="jquery"], script[src*="fetch"]');
+            const frameworkScripts = document.querySelectorAll('script[src*="react"], script[src*="angular"], script[src*="vue"]');
+            if (xhrScripts.length > 0 || frameworkScripts.length > 0) {
                 findings.csrf.push({
                     action: '(SPA AJAX calls)',
                     method: 'XHR/FETCH',
                     formId: 'n/a',
                     inputCount: 0,
                     severity: 'MEDIUM',
-                    note: 'SPA detected with AJAX library but no visible CSRF header setup'
+                    verdict: '⚠️ CSRF POSSIBLE — SPA without visible CSRF protection',
+                    reason: 'SPA framework detected with AJAX library but no visible CSRF header configuration',
+                    note: 'Check if custom headers or cookies are used for CSRF protection'
                 });
             }
         }

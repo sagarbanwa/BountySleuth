@@ -205,22 +205,43 @@ function renderCORS(data) {
 // ---- CSRF ----
 function renderCSRF(data) {
     const csrf = data.csrf || [];
-    setCount('csrfCount', csrf.length, csrf.length > 0 ? 'high' : 'ok');
+    const issues = csrf.filter(c => c.severity !== 'OK');
+    const protected_ = csrf.filter(c => c.severity === 'OK');
+    setCount('csrfCount', issues.length, issues.length > 0 ? 'high' : 'ok');
 
     const list = document.getElementById('csrflist');
     if (csrf.length === 0) {
-        list.innerHTML = '<li class="empty-state">All forms appear CSRF-protected, or no state-changing forms found.</li>';
+        list.innerHTML = '<li class="empty-state">No forms found on this page.</li>';
         return;
     }
 
-    csrf.forEach(c => {
-        const text = `${c.method} → ${c.action}${c.note ? '\n' + c.note : ''}`;
-        const li = createListItem(text, c.severity ? c.severity.toLowerCase() : 'high');
-        if (c.severity) {
-            li.appendChild(createSevTag(c.severity));
-        }
+    if (issues.length === 0 && protected_.length > 0) {
+        list.innerHTML = `<li class="empty-state">✅ All ${protected_.length} form(s) appear CSRF-protected.</li>`;
+        return;
+    }
+
+    // Show vulnerable/weak findings first
+    issues.forEach(c => {
+        const sevClass = c.severity === 'CRITICAL' ? 'high' : c.severity === 'HIGH' ? 'high' : 'medium';
+        let text = `${c.verdict || c.method + ' → ' + c.action}`;
+        text += `\n→ ${c.method} ${c.action}`;
+        if (c.reason) text += `\n📋 ${c.reason}`;
+        if (c.tokenPreview) text += `\n🔑 Token: ${c.tokenPreview}`;
+        if (c.note) text += `\n${c.note}`;
+
+        const li = createListItem(text, sevClass);
+        const tag = c.severity === 'CRITICAL' ? 'HIGH' : c.severity;
+        li.appendChild(createSevTag(tag));
         list.appendChild(li);
     });
+
+    // Show protected forms as info
+    if (protected_.length > 0) {
+        const infoLi = document.createElement('li');
+        infoLi.style.cssText = 'font-size:10px; color:var(--text-secondary); padding:4px 8px; opacity:0.7;';
+        infoLi.textContent = `✅ ${protected_.length} other form(s) have valid CSRF protection`;
+        list.appendChild(infoLi);
+    }
 }
 
 // ---- XSS ----
@@ -822,9 +843,10 @@ function generateReport(host, data) {
 
     // CSRF
     const csrf = data.csrf || [];
-    report += `## CSRF Missing Tokens (${csrf.length})\n`;
-    csrf.forEach(c => report += `- [${c.severity || 'HIGH'}] ${c.method} → ${c.action}${c.note ? ' (' + c.note + ')' : ''}\n`);
-    if (csrf.length === 0) report += `- All forms protected\n`;
+    const csrfIssues = csrf.filter(c => c.severity !== 'OK');
+    report += `## CSRF Analysis (${csrfIssues.length} issue(s), ${csrf.length - csrfIssues.length} protected)\n`;
+    csrfIssues.forEach(c => report += `- [${c.severity || 'HIGH'}] ${c.verdict || c.method + ' → ' + c.action}\n  → ${c.reason || ''}${c.note ? '\n  Note: ' + c.note : ''}\n`);
+    if (csrfIssues.length === 0) report += `- ✅ All forms protected\n`;
     report += `\n`;
 
     // XSS
