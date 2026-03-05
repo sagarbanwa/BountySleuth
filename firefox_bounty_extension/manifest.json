@@ -2,6 +2,7 @@
     "manifest_version": 3,
     "name": "BountySleuth - Web Sec Analyzer",
     "version": "3.3",
+    "author": "Security0x0 Research And Development Private",
     "description": "Professional bug bounty companion v3.3. Universal scanner with WAF, CSRF, XSS, DOM Sinks, CORS, Cloud Detection, Source Maps, and Smart Payloads.",
     "icons": {
         "48": "icon.png",

@@ -769,7 +769,8 @@ function createSevTag(severity) {
 // ---- Export ----
 function generateReport(host, data) {
     let report = `# BountySleuth Report — ${host}\n`;
-    report += `Generated: ${new Date().toISOString()}\n\n`;
+    report += `Generated: ${new Date().toISOString()}\n`;
+    report += `Developed by: Security0x0 Research And Development Private\n\n`;
 
     // WAF
     const wafs = data.wafs || [];
