@@ -493,3 +493,12 @@ h2.toggle.open {
 .sourcemap-dl-btn:hover {
     background: #388bfd !important;
 }
+
+.sourcemap-unpack-btn {
+    background: #238636 !important;
+    margin-left: 4px;
+}
+
+.sourcemap-unpack-btn:hover {
+    background: #2ea043 !important;
+}

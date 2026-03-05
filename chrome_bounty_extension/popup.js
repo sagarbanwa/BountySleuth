@@ -710,10 +710,29 @@ function renderSourceMaps(data) {
                 setTimeout(() => copyBtn.textContent = 'Copy URL', 1000);
             };
 
+            const unpackBtn = document.createElement('button');
+            unpackBtn.className = 'payload-copy-btn sourcemap-unpack-btn';
+            unpackBtn.textContent = '📦 Unpack ZIP';
+            unpackBtn.style.display = (sm.mapUrl !== '(inline data: URI)' && sm.analysis && sm.analysis.hasSourceContent) ? 'inline-block' : 'none';
+            unpackBtn.onclick = (e) => {
+                e.stopPropagation();
+                unpackBtn.textContent = '⏳ Unpacking...';
+                chrome.runtime.sendMessage({ action: 'unpackSourceMap', url: sm.mapUrl }, (response) => {
+                    if (response && response.status === 'error') {
+                        unpackBtn.textContent = '❌ Error';
+                        console.error("Unpack error:", response.message);
+                    } else {
+                        unpackBtn.textContent = '✓ Unpacked';
+                    }
+                    setTimeout(() => unpackBtn.textContent = '📦 Unpack ZIP', 2000);
+                });
+            };
+
             item.appendChild(codeDiv);
             item.appendChild(copyBtn);
             if (sm.mapUrl !== '(inline data: URI)') {
                 item.appendChild(dlBtn);
+                item.appendChild(unpackBtn);
             }
             box.appendChild(item);
             li.appendChild(box);
@@ -770,7 +789,7 @@ function createSevTag(severity) {
 function generateReport(host, data) {
     let report = `# BountySleuth Report — ${host}\n`;
     report += `Generated: ${new Date().toISOString()}\n`;
-    report += `Developed by: Security0x0 Research And Development Private\n\n`;
+    report += `Developed by: Security0x0 Research And Development Private Limited\n\n`;
 
     // WAF
     const wafs = data.wafs || [];

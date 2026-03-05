@@ -290,7 +290,184 @@ function checkServerInfo(headerMap, analysis) {
     });
 }
 
-// ---- Source Map Download Handler (v3.3) ----
+// ---- Source Map Unpacker & ZIP Downloader (v3.4) ----
+
+/**
+ * A minimal, dependency-free ZIP writer (Stored format)
+ * Reconstructs directory structures from source maps.
+ */
+class SimpleZipWriter {
+    constructor() {
+        this.files = [];
+    }
+
+    addFile(path, content) {
+        const encoder = new TextEncoder();
+        const data = typeof content === 'string' ? encoder.encode(content) : new Uint8Array(content);
+        this.files.push({
+            path: path.replace(/\\/g, '/').replace(/^\/+/, ''),
+            data: data,
+            time: new Date()
+        });
+    }
+
+    _dateToDos(date) {
+        const y = date.getFullYear();
+        if (y < 1980) return 0;
+        return ((y - 1980) << 25) | ((date.getMonth() + 1) << 21) | (date.getDate() << 16) |
+            (date.getHours() << 11) | (date.getMinutes() << 5) | (date.getSeconds() >> 1);
+    }
+
+    toUint8Array() {
+        let totalSize = 0;
+        const centralDirSize = this.files.reduce((acc, f) => acc + 46 + f.path.length, 0);
+        const fileDataSize = this.files.reduce((acc, f) => acc + 30 + f.path.length + f.data.length, 0);
+        const buffer = new Uint8Array(fileDataSize + centralDirSize + 22);
+        let offset = 0;
+
+        const writeUint16 = (val) => { buffer[offset++] = val & 0xFF; buffer[offset++] = (val >> 8) & 0xFF; };
+        const writeUint32 = (val) => {
+            buffer[offset++] = val & 0xFF; buffer[offset++] = (val >> 8) & 0xFF;
+            buffer[offset++] = (val >> 16) & 0xFF; buffer[offset++] = (val >> 24) & 0xFF;
+        };
+        const writeString = (str) => {
+            const bytes = new TextEncoder().encode(str);
+            buffer.set(bytes, offset);
+            offset += bytes.length;
+        };
+
+        const fileOffsets = [];
+
+        // Local File Headers + Data
+        for (const f of this.files) {
+            fileOffsets.push(offset);
+            writeUint32(0x04034b50); // Signature
+            writeUint16(10); // Version
+            writeUint16(0); // Flags
+            writeUint16(0); // Compression (Stored)
+            writeUint32(this._dateToDos(f.time));
+            writeUint32(this._crc32(f.data));
+            writeUint32(f.data.length); // Compressed size
+            writeUint32(f.data.length); // Uncompressed size
+            writeUint16(f.path.length);
+            writeUint16(0); // Extra field len
+            writeString(f.path);
+            buffer.set(f.data, offset);
+            offset += f.data.length;
+        }
+
+        const centralDirOffset = offset;
+
+        // Central Directory
+        for (let i = 0; i < this.files.length; i++) {
+            const f = this.files[i];
+            writeUint32(0x02014b50); // Signature
+            writeUint16(20); // Version made by
+            writeUint16(10); // Version needed
+            writeUint16(0); // Flags
+            writeUint16(0); // Compression
+            writeUint32(this._dateToDos(f.time));
+            writeUint32(this._crc32(f.data));
+            writeUint32(f.data.length);
+            writeUint32(f.data.length);
+            writeUint16(f.path.length);
+            writeUint16(0); // Extra
+            writeUint16(0); // Comment
+            writeUint16(0); // Disk
+            writeUint16(0); // Internal attr
+            writeUint32(0); // External attr
+            writeUint32(fileOffsets[i]); // Local header offset
+            writeString(f.path);
+        }
+
+        const endOfCentralDirOffset = offset;
+
+        // End of Central Directory
+        writeUint32(0x06054b50);
+        writeUint16(0); // Disk num
+        writeUint16(0); // Start disk
+        writeUint16(this.files.length); // Records on disk
+        writeUint16(this.files.length); // Total records
+        writeUint32(endOfCentralDirOffset - centralDirOffset); // Size of central dir
+        writeUint32(centralDirOffset); // Offset
+        writeUint16(0); // Comment len
+
+        return buffer;
+    }
+
+    _crc32(data) {
+        let crc = 0xFFFFFFFF;
+        for (let i = 0; i < data.length; i++) {
+            let byte = data[i];
+            crc ^= byte;
+            for (let j = 0; j < 8; j++) {
+                crc = (crc >>> 1) ^ (crc & 1 ? 0xEDB88320 : 0);
+            }
+        }
+        return (crc ^ 0xFFFFFFFF) >>> 0;
+    }
+}
+
+async function unpackSourceMap(url) {
+    try {
+        const resp = await fetch(url);
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+        const map = await resp.json();
+
+        if (!map.sources || !map.sourcesContent) {
+            throw new Error("Source map does not contain embedded sourcesContent.");
+        }
+
+        const zip = new SimpleZipWriter();
+
+        // Add the map itself
+        const mapFileName = url.split('/').pop().split('?')[0] || 'source.map';
+        zip.addFile(mapFileName, JSON.stringify(map, null, 2));
+
+        // Reconstruct files
+        for (let i = 0; i < map.sources.length; i++) {
+            let sourcePath = map.sources[i];
+            const content = map.sourcesContent[i];
+
+            if (!content) continue;
+
+            // Normalize path
+            sourcePath = sourcePath
+                .replace(/^webpack:\/\/\//i, '')
+                .replace(/^webpack:\/\/.*?\//i, '')
+                .replace(/^ng:\/\//i, '')
+                .replace(/^\.\//, '')
+                .replace(/^\.\.\//g, 'parent/')
+                .replace(/^[a-z]:\//i, '') // Remove drive letters
+                .split('?')[0];
+
+            zip.addFile('src_unpacked/' + sourcePath, content);
+        }
+
+        const zipBuffer = zip.toUint8Array();
+        const blob = new Blob([zipBuffer], { type: 'application/zip' });
+        const reader = new FileReader();
+
+        return new Promise((resolve, reject) => {
+            reader.onload = () => {
+                const dataUrl = reader.result;
+                const baseName = mapFileName.replace('.js.map', '').replace('.map', '');
+                chrome.downloads.download({
+                    url: dataUrl,
+                    filename: `BountySleuth_Unpacked/${baseName}_source_code.zip`,
+                    saveAs: false
+                }, () => resolve());
+            };
+            reader.onerror = () => reject(new Error("Failed to read zip blob"));
+            reader.readAsDataURL(blob);
+        });
+
+    } catch (e) {
+        console.error('BountySleuth unpack error:', e);
+        throw e;
+    }
+}
+
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     if (request.action === 'downloadSourceMap' && request.url) {
         try {
@@ -308,6 +485,11 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
             console.error('BountySleuth download error:', e);
         }
         sendResponse({ status: 'download_started' });
+    } else if (request.action === 'unpackSourceMap' && request.url) {
+        unpackSourceMap(request.url)
+            .then(() => sendResponse({ status: 'unpack_started' }))
+            .catch(err => sendResponse({ status: 'error', message: err.message }));
+        return true; // Keep channel open for async response
     }
     return true;
 });
