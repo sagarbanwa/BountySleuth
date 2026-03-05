@@ -420,9 +420,9 @@ async function unpackSourceMap(url) {
 
         const zip = new SimpleZipWriter();
 
-        // Add the map itself
+        // Add the map itself (inside src_unpacked)
         const mapFileName = url.split('/').pop().split('?')[0] || 'source.map';
-        zip.addFile(mapFileName, JSON.stringify(map, null, 2));
+        zip.addFile('src_unpacked/' + mapFileName, JSON.stringify(map, null, 2));
 
         // Reconstruct files
         for (let i = 0; i < map.sources.length; i++) {
