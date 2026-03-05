@@ -22,6 +22,7 @@ BountySleuth performs real-time analysis across multiple attack vectors:
 * **☁️ Cloud Infrastructure**: Identifies cloud assets, storage buckets (S3, Azure Blob, GCP Storage), and signed URLs exposed in the application.
 * **📡 Live API Collector (cURL)**: Intercepts background XHR and Fetch requests, automatically generating ready-to-use cURL commands for deeper API testing.
 * **🗺️ Endpoint Map / JS**: Automatically maps discovered API routes and JavaScript files for easy extraction.
+* **🗺️ Source Map Detector**: Discovers exposed JavaScript source maps (`.map` files), validates accessibility, and enables one-click download of original source code.
 * **🍪 Cookie Security**: Flags insecure session cookies (e.g., missing HttpOnly or Secure flags).
 
 ## 🛠️ Installation

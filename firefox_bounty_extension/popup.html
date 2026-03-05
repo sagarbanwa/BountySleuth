@@ -12,7 +12,7 @@
     <div class="header">
         <div class="header-left">
             <h1>🔍 BountySleuth</h1>
-            <span class="badge">v3.2</span>
+            <span class="badge">v3.3</span>
         </div>
         <div id="lastScan" class="last-scan"></div>
     </div>
@@ -163,6 +163,21 @@
                 <ul id="endpointlist" class="list"></ul>
                 <div class="section-title" style="margin-top:10px;">JavaScript Files</div>
                 <ul id="jslist" class="list"></ul>
+            </div>
+        </div>
+
+        <!-- Source Maps -->
+        <div class="card">
+            <h2 class="toggle" data-target="sourcemapContent">
+                <span>🗺️ Source Map Detector</span>
+                <span id="sourcemapCount" class="count">0</span>
+            </h2>
+            <div class="content hidden" id="sourcemapContent">
+                <div style="margin-bottom: 8px; display: flex; gap: 8px;">
+                    <button id="downloadAllMapsBtn" class="btn btn-secondary"
+                        style="font-size: 11px; padding: 3px 6px;">⬇️ Download All Accessible</button>
+                </div>
+                <ul id="sourcemaplist" class="list"></ul>
             </div>
         </div>
 

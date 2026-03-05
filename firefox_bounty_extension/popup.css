@@ -462,3 +462,34 @@ h2.toggle.open {
 .section-title:first-child {
     margin-top: 0;
 }
+
+/* ---- Source Map Detector ---- */
+.sourcemap-summary {
+    background: linear-gradient(135deg, rgba(255, 123, 114, 0.12), rgba(248, 81, 73, 0.06));
+    border: 1px solid rgba(255, 123, 114, 0.3);
+    border-radius: 6px;
+    padding: 8px 12px;
+    margin-bottom: 8px;
+    font-size: 11px;
+    color: var(--critical);
+}
+
+.sourcemap-analysis {
+    margin-top: 8px;
+    padding: 8px 10px;
+    background: rgba(88, 166, 255, 0.06);
+    border: 1px solid rgba(88, 166, 255, 0.2);
+    border-radius: 5px;
+    font-size: 10px;
+    color: var(--text-secondary);
+    white-space: pre-wrap;
+    line-height: 1.7;
+}
+
+.sourcemap-dl-btn {
+    background: #1f6feb !important;
+}
+
+.sourcemap-dl-btn:hover {
+    background: #388bfd !important;
+}

@@ -95,6 +95,7 @@ function loadData(host) {
         renderCloud(data);
         renderLiveApis(data);
         renderEndpoints(data);
+        renderSourceMaps(data);
 
         // Render JS Protections badge if found
         renderProtections(data);
@@ -583,6 +584,164 @@ function renderEndpoints(data) {
     if (btnJ) btnJ.onclick = () => copyToClipboard(jsFiles.join('\n'), 'copyJsBtn');
 }
 
+// ---- Source Maps (v3.3 Enhanced) ----
+function renderSourceMaps(data) {
+    const maps = data.sourcemaps || [];
+    const accessibleMaps = maps.filter(m => m.accessible);
+    const jsMaps = accessibleMaps.filter(m => !m.source.includes('CSS'));
+    setCount('sourcemapCount', maps.length, accessibleMaps.length > 0 ? 'critical' : (maps.length > 0 ? 'info' : null));
+
+    const list = document.getElementById('sourcemaplist');
+    if (maps.length === 0) {
+        list.innerHTML = '<li class="empty-state">No source maps detected. Rescan after page loads fully.</li>';
+        return;
+    }
+
+    // Summary bar
+    if (accessibleMaps.length > 0) {
+        const summaryDiv = document.createElement('div');
+        summaryDiv.className = 'sourcemap-summary';
+        summaryDiv.innerHTML = `<strong>⚠️ ${accessibleMaps.length} accessible map${accessibleMaps.length > 1 ? 's' : ''} found</strong> (${jsMaps.length} JS, ${accessibleMaps.length - jsMaps.length} CSS)`;
+        list.parentElement.insertBefore(summaryDiv, list);
+    }
+
+    maps.forEach(sm => {
+        const li = document.createElement('li');
+        li.className = sm.accessible ? 'sev-high' : 'sev-info';
+        li.style.whiteSpace = 'pre-wrap';
+
+        // File name from URL
+        const isCSS = sm.source.includes('CSS');
+        const typeIcon = isCSS ? '🎨' : '📜';
+        const jsName = sm.jsUrl === '(inline script)' ? sm.jsUrl : sm.jsUrl.split('/').pop().split('?')[0];
+        const mapName = sm.mapUrl === '(inline data: URI)' ? sm.mapUrl : sm.mapUrl.split('/').pop().split('?')[0];
+
+        // Format size
+        let sizeStr = '';
+        if (sm.size) {
+            if (sm.size > 1024 * 1024) sizeStr = ` (${(sm.size / (1024 * 1024)).toFixed(1)} MB)`;
+            else sizeStr = ` (${(sm.size / 1024).toFixed(1)} KB)`;
+        }
+
+        const statusIcon = sm.accessible ? '🟢' : '🔴';
+        let text = `${statusIcon} ${typeIcon} ${mapName}${sizeStr}`;
+        text += `\n→ Source: ${jsName}`;
+        text += `\n→ Found via: ${sm.source}`;
+        text += `\n→ HTTP Status: ${sm.status}`;
+
+        if (sm.lastModified) {
+            text += `\n→ Last Modified: ${sm.lastModified}`;
+        }
+
+        li.textContent = text;
+
+        // Analysis badge (framework, source count, sourcesContent)
+        if (sm.accessible && sm.analysis) {
+            const a = sm.analysis;
+
+            // Framework tag
+            if (a.framework && a.framework !== 'unknown') {
+                const fwTag = document.createElement('span');
+                fwTag.className = 'sev-tag medium';
+                fwTag.style.marginLeft = '4px';
+                fwTag.textContent = `🔧 ${a.framework}`;
+                li.appendChild(fwTag);
+            }
+
+            // Analysis details box
+            const analysisDiv = document.createElement('div');
+            analysisDiv.className = 'sourcemap-analysis';
+
+            let analysisText = `📊 ${a.sourceCount} source files`;
+            if (a.interestingFiles) analysisText += ` (${a.interestingFiles} app files)`;
+            if (a.totalSize) {
+                const totalMB = (a.totalSize / (1024 * 1024)).toFixed(1);
+                analysisText += `\n📦 Map size: ${totalMB} MB`;
+            }
+
+            if (a.hasSourceContent) {
+                analysisText += `\n🚨 FULL SOURCE CODE EMBEDDED (${a.sourceContentCount} files with sourcesContent)`;
+            }
+
+            if (a.sampleSources && a.sampleSources.length > 0) {
+                analysisText += `\n📁 Sample app files:`;
+                a.sampleSources.forEach(s => {
+                    analysisText += `\n   • ${s}`;
+                });
+            }
+
+            analysisDiv.textContent = analysisText;
+            li.appendChild(analysisDiv);
+        }
+
+        if (sm.accessible) {
+            li.appendChild(createSevTag(sm.severity === 'MEDIUM' ? 'MEDIUM' : 'HIGH'));
+
+            // Action buttons
+            const box = document.createElement('div');
+            box.className = 'payload-box';
+            box.style.marginTop = '6px';
+
+            const item = document.createElement('div');
+            item.className = 'payload-item';
+
+            const codeDiv = document.createElement('div');
+            codeDiv.className = 'payload-code';
+            codeDiv.textContent = sm.mapUrl;
+            codeDiv.style.fontSize = '9px';
+
+            const dlBtn = document.createElement('button');
+            dlBtn.className = 'payload-copy-btn sourcemap-dl-btn';
+            dlBtn.textContent = '⬇ Download';
+            dlBtn.onclick = (e) => {
+                e.stopPropagation();
+                chrome.runtime.sendMessage({ action: 'downloadSourceMap', url: sm.mapUrl });
+                dlBtn.textContent = '✓ Started';
+                setTimeout(() => dlBtn.textContent = '⬇ Download', 1500);
+            };
+
+            const copyBtn = document.createElement('button');
+            copyBtn.className = 'payload-copy-btn';
+            copyBtn.textContent = 'Copy URL';
+            copyBtn.onclick = (e) => {
+                e.stopPropagation();
+                copyToClipboard(sm.mapUrl, 'exportBtn');
+                copyBtn.textContent = '✓';
+                setTimeout(() => copyBtn.textContent = 'Copy URL', 1000);
+            };
+
+            item.appendChild(codeDiv);
+            item.appendChild(copyBtn);
+            if (sm.mapUrl !== '(inline data: URI)') {
+                item.appendChild(dlBtn);
+            }
+            box.appendChild(item);
+            li.appendChild(box);
+        } else {
+            li.appendChild(createSevTag('INFO'));
+        }
+
+        list.appendChild(li);
+    });
+
+    // Download All button
+    const dlAllBtn = document.getElementById('downloadAllMapsBtn');
+    if (dlAllBtn) {
+        const downloadable = accessibleMaps.filter(sm => sm.mapUrl !== '(inline data: URI)');
+        if (downloadable.length === 0) {
+            dlAllBtn.style.display = 'none';
+        } else {
+            dlAllBtn.onclick = () => {
+                downloadable.forEach(sm => {
+                    chrome.runtime.sendMessage({ action: 'downloadSourceMap', url: sm.mapUrl });
+                });
+                dlAllBtn.textContent = `✓ ${downloadable.length} Downloads Started`;
+                setTimeout(() => dlAllBtn.textContent = '⬇️ Download All Accessible', 2000);
+            };
+        }
+    }
+}
+
 // ---- Helpers ----
 function setCount(elementId, count, severity) {
     const el = document.getElementById(elementId);
@@ -705,6 +864,40 @@ function generateReport(host, data) {
     report += `## Mined Endpoints (${endpoints.length})\n`;
     endpoints.forEach(e => report += `- ${e}\n`);
     if (endpoints.length === 0) report += `- None found\n`;
+    report += `\n`;
+
+    // Source Maps
+    const sourcemaps = data.sourcemaps || [];
+    const accessibleSM = sourcemaps.filter(sm => sm.accessible);
+    report += `## Source Maps (${sourcemaps.length} total, ${accessibleSM.length} accessible)\n`;
+    sourcemaps.forEach(sm => {
+        const status = sm.accessible ? '🟢 ACCESSIBLE' : '🔴 Not accessible';
+        let sizeStr = '';
+        if (sm.size) {
+            sizeStr = sm.size > 1024 * 1024 ? ` (${(sm.size / (1024 * 1024)).toFixed(1)} MB)` : ` (${(sm.size / 1024).toFixed(1)} KB)`;
+        }
+        report += `- [${sm.severity}] ${sm.mapUrl}${sizeStr}\n`;
+        report += `  → Source: ${sm.jsUrl}\n`;
+        report += `  → Status: ${status} (HTTP ${sm.status})\n`;
+        report += `  → Found via: ${sm.source}\n`;
+        if (sm.lastModified) report += `  → Last Modified: ${sm.lastModified}\n`;
+
+        if (sm.analysis) {
+            const a = sm.analysis;
+            if (a.framework && a.framework !== 'unknown') report += `  → Framework: ${a.framework}\n`;
+            report += `  → Source files: ${a.sourceCount}`;
+            if (a.interestingFiles) report += ` (${a.interestingFiles} application files)`;
+            report += `\n`;
+            if (a.hasSourceContent) {
+                report += `  → ⚠️ FULL SOURCE CODE EMBEDDED (${a.sourceContentCount} files with sourcesContent)\n`;
+            }
+            if (a.sampleSources && a.sampleSources.length > 0) {
+                report += `  → Sample files:\n`;
+                a.sampleSources.forEach(s => report += `    - ${s}\n`);
+            }
+        }
+    });
+    if (sourcemaps.length === 0) report += `- None detected\n`;
     report += `\n`;
 
     return report;

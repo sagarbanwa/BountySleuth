@@ -330,7 +330,8 @@ async function scanPage() {
         cloud_assets: [],
         endpoints: new Set(),
         js_files: new Set(),
-        js_protections: []
+        js_protections: [],
+        sourcemaps: []
     };
 
     // =============================================
@@ -380,7 +381,12 @@ async function scanPage() {
     mineEndpoints(findings);
 
     // =============================================
-    // 10. SAVE ALL FINDINGS
+    // 10. SOURCE MAP DETECTION
+    // =============================================
+    await scanSourceMaps(findings);
+
+    // =============================================
+    // 11. SAVE ALL FINDINGS
     // =============================================
     saveFindings(findings);
 }
@@ -930,6 +936,310 @@ function mineEndpoints(findings) {
     }
 }
 
+// ---- Source Map Detector & Downloader (v3.3 Enhanced) ----
+async function scanSourceMaps(findings) {
+    const sourceMappingRegex = /\/\/[#@]\s*sourceMappingURL\s*=\s*(\S+)/gi;
+    const cssSourceMappingRegex = /\/\*[#@]\s*sourceMappingURL\s*=\s*(\S+)\s*\*\//gi;
+    const seenMapUrls = new Set();
+
+    // Helper: resolve map URL relative to base URL
+    const resolveMapUrl = (mapRef, baseUrl) => {
+        try {
+            if (!mapRef || mapRef.length < 3) return null;
+            if (mapRef.startsWith('data:')) return { type: 'inline', data: mapRef };
+            return { type: 'url', url: new URL(mapRef, baseUrl).href };
+        } catch (e) {
+            return null;
+        }
+    };
+
+    // Helper: validate map URL accessibility
+    const validateMap = async (mapUrl) => {
+        try {
+            const resp = await fetch(mapUrl, { method: 'HEAD' });
+            return {
+                accessible: resp.ok,
+                status: resp.status,
+                size: resp.headers.get('content-length') ? parseInt(resp.headers.get('content-length')) : null,
+                contentType: resp.headers.get('content-type') || 'unknown',
+                lastModified: resp.headers.get('last-modified') || null
+            };
+        } catch (e) {
+            return { accessible: false, status: 0, size: null, contentType: 'unknown', lastModified: null };
+        }
+    };
+
+    // Helper: analyze map content to detect framework + source count
+    const analyzeMapContent = async (mapUrl) => {
+        try {
+            const resp = await fetch(mapUrl);
+            if (!resp.ok) return null;
+            const text = await resp.text();
+            if (text.length > 50 * 1024 * 1024) return { sourceCount: '?', framework: 'unknown', totalSize: text.length };
+
+            try {
+                const mapData = JSON.parse(text);
+                const sources = mapData.sources || [];
+                const sourceCount = sources.length;
+
+                // Detect framework
+                let framework = 'unknown';
+                const allSources = sources.join(' ').toLowerCase();
+                if (allSources.includes('node_modules/react') || allSources.includes('react-dom')) framework = 'React';
+                else if (allSources.includes('node_modules/@angular')) framework = 'Angular';
+                else if (allSources.includes('node_modules/vue') || allSources.includes('.vue')) framework = 'Vue.js';
+                else if (allSources.includes('node_modules/next') || allSources.includes('_next/')) framework = 'Next.js';
+                else if (allSources.includes('node_modules/nuxt')) framework = 'Nuxt.js';
+                else if (allSources.includes('node_modules/svelte') || allSources.includes('.svelte')) framework = 'Svelte';
+                else if (allSources.includes('node_modules/ember')) framework = 'Ember.js';
+                else if (allSources.includes('webpack://') || allSources.includes('webpack/')) framework = 'Webpack';
+                else if (allSources.includes('node_modules/vite') || allSources.includes('/@vite/')) framework = 'Vite';
+                else if (allSources.includes('node_modules/jquery')) framework = 'jQuery';
+                else if (allSources.includes('.tsx')) framework = 'TypeScript (TSX)';
+                else if (allSources.includes('.ts')) framework = 'TypeScript';
+
+                // Check for embedded sourcesContent (full original source code)
+                const hasSourceContent = !!(mapData.sourcesContent && mapData.sourcesContent.length > 0);
+                const sourceContentCount = mapData.sourcesContent ? mapData.sourcesContent.filter(s => s && s.length > 0).length : 0;
+
+                // Interesting paths (not node_modules)
+                const interestingPaths = sources.filter(s =>
+                    !s.includes('node_modules/') &&
+                    !s.startsWith('webpack/') &&
+                    !s.includes('polyfill') &&
+                    (s.endsWith('.js') || s.endsWith('.ts') || s.endsWith('.jsx') || s.endsWith('.tsx') || s.endsWith('.vue') || s.endsWith('.svelte'))
+                );
+
+                return {
+                    sourceCount,
+                    framework,
+                    hasSourceContent,
+                    sourceContentCount,
+                    totalSize: text.length,
+                    interestingFiles: interestingPaths.length,
+                    sampleSources: interestingPaths.slice(0, 5)
+                };
+            } catch (parseErr) {
+                return { sourceCount: 0, framework: 'parse-error', totalSize: text.length };
+            }
+        } catch (e) {
+            return null;
+        }
+    };
+
+    // Helper: add finding (deduplicated)
+    const addFinding = async (jsUrl, mapUrl, source, doAnalyze) => {
+        if (seenMapUrls.has(mapUrl)) return;
+        seenMapUrls.add(mapUrl);
+
+        const validation = await validateMap(mapUrl);
+        let analysis = null;
+        if (validation.accessible && doAnalyze) {
+            analysis = await analyzeMapContent(mapUrl);
+        }
+
+        findings.sourcemaps.push({
+            jsUrl,
+            mapUrl,
+            accessible: validation.accessible,
+            status: validation.status,
+            size: validation.size,
+            contentType: validation.contentType,
+            lastModified: validation.lastModified,
+            source,
+            severity: validation.accessible ? 'HIGH' : 'INFO',
+            analysis
+        });
+    };
+
+    // ============================================
+    // 1. Scan external JS scripts
+    // ============================================
+    const scripts = document.querySelectorAll('script[src]');
+    const scriptPromises = Array.from(scripts).map(async (s) => {
+        const src = s.src;
+        if (!src || src.startsWith('chrome-extension://') || src.startsWith('moz-extension://')) return;
+
+        try {
+            const isSameOrigin = src.startsWith(window.location.origin);
+
+            if (isSameOrigin) {
+                const resp = await fetch(src);
+                if (resp.ok) {
+                    // Check X-SourceMap / SourceMap response header
+                    const headerMap = resp.headers.get('sourcemap') || resp.headers.get('x-sourcemap');
+                    if (headerMap) {
+                        const resolved = resolveMapUrl(headerMap, src);
+                        if (resolved && resolved.type === 'url') {
+                            await addFinding(src, resolved.url, 'SourceMap HTTP header', true);
+                        }
+                    }
+
+                    const text = await resp.text();
+                    let match;
+                    sourceMappingRegex.lastIndex = 0;
+                    while ((match = sourceMappingRegex.exec(text)) !== null) {
+                        const resolved = resolveMapUrl(match[1], src);
+                        if (resolved) {
+                            if (resolved.type === 'url') {
+                                await addFinding(src, resolved.url, 'sourceMappingURL comment', true);
+                            } else if (resolved.type === 'inline') {
+                                const inlineSize = resolved.data.length;
+                                if (!seenMapUrls.has('inline:' + src)) {
+                                    seenMapUrls.add('inline:' + src);
+                                    findings.sourcemaps.push({
+                                        jsUrl: src,
+                                        mapUrl: '(inline data: URI)',
+                                        accessible: true,
+                                        status: 200,
+                                        size: Math.round(inlineSize * 0.75),
+                                        contentType: 'application/json (inline)',
+                                        lastModified: null,
+                                        source: 'inline data: URI',
+                                        severity: 'MEDIUM',
+                                        analysis: null
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Direct .map probe (works cross-origin too)
+            const cleanUrl = src.split('?')[0];
+            const probeUrls = [cleanUrl + '.map'];
+            if (src !== cleanUrl) probeUrls.push(src + '.map');
+
+            for (const probeUrl of probeUrls) {
+                if (!seenMapUrls.has(probeUrl)) {
+                    const probeValid = await validateMap(probeUrl);
+                    if (probeValid.accessible) {
+                        await addFinding(src, probeUrl, 'direct .map probe', true);
+                        break;
+                    }
+                }
+            }
+        } catch (e) { /* ignore CORS / network errors */ }
+    });
+
+    await Promise.all(scriptPromises);
+
+    // ============================================
+    // 2. Scan CSS stylesheets for source maps
+    // ============================================
+    const styleSheets = document.querySelectorAll('link[rel="stylesheet"][href]');
+    const cssPromises = Array.from(styleSheets).map(async (link) => {
+        const href = link.href;
+        if (!href || !href.startsWith(window.location.origin)) return;
+
+        try {
+            const resp = await fetch(href);
+            if (!resp.ok) return;
+
+            const headerMap = resp.headers.get('sourcemap') || resp.headers.get('x-sourcemap');
+            if (headerMap) {
+                const resolved = resolveMapUrl(headerMap, href);
+                if (resolved && resolved.type === 'url') {
+                    await addFinding(href, resolved.url, 'CSS SourceMap header', false);
+                }
+            }
+
+            const text = await resp.text();
+            let match;
+            cssSourceMappingRegex.lastIndex = 0;
+            while ((match = cssSourceMappingRegex.exec(text)) !== null) {
+                const resolved = resolveMapUrl(match[1], href);
+                if (resolved && resolved.type === 'url') {
+                    await addFinding(href, resolved.url, 'CSS sourceMappingURL', false);
+                }
+            }
+
+            // Direct probe
+            const cssMapUrl = href.split('?')[0] + '.map';
+            if (!seenMapUrls.has(cssMapUrl)) {
+                const probeValid = await validateMap(cssMapUrl);
+                if (probeValid.accessible) {
+                    await addFinding(href, cssMapUrl, 'CSS .map probe', false);
+                }
+            }
+        } catch (e) { /* ignore */ }
+    });
+
+    await Promise.all(cssPromises);
+
+    // ============================================
+    // 3. Inline scripts with sourceMappingURL
+    // ============================================
+    const inlineScripts = document.querySelectorAll('script:not([src])');
+    const inlinePromises = Array.from(inlineScripts).map(async (script) => {
+        const code = script.textContent;
+        if (!code || code.length < 10) return;
+
+        let match;
+        sourceMappingRegex.lastIndex = 0;
+        while ((match = sourceMappingRegex.exec(code)) !== null) {
+            const resolved = resolveMapUrl(match[1], window.location.href);
+            if (resolved && resolved.type === 'url') {
+                await addFinding('(inline script)', resolved.url, 'inline sourceMappingURL', true);
+            }
+        }
+    });
+
+    await Promise.all(inlinePromises);
+
+    // ============================================
+    // 4. Build-tool pattern probing (Webpack, Next.js, Nuxt)
+    // ============================================
+    try {
+        const bodyHTML = document.documentElement.outerHTML;
+        const chunkProbes = [];
+
+        // Webpack chunks
+        const chunkRegex = /["']([a-zA-Z0-9._\/\-]+\.chunk\.js(?:\?[^"']*)?)['"]/gi;
+        let cm;
+        while ((cm = chunkRegex.exec(bodyHTML)) !== null) {
+            try {
+                const absUrl = new URL(cm[1], window.location.href).href;
+                const mapUrl = absUrl.split('?')[0] + '.map';
+                if (!seenMapUrls.has(mapUrl)) chunkProbes.push(addFinding(absUrl, mapUrl, 'webpack chunk probe', true));
+            } catch (e) { }
+        }
+
+        // Next.js _next/static
+        const nextRegex = /["']((?:\/_next\/static\/[a-zA-Z0-9._\/\-]+)\.js(?:\?[^"']*)?)['"]/gi;
+        let nm;
+        while ((nm = nextRegex.exec(bodyHTML)) !== null) {
+            try {
+                const absUrl = new URL(nm[1], window.location.href).href;
+                const mapUrl = absUrl.split('?')[0] + '.map';
+                if (!seenMapUrls.has(mapUrl)) chunkProbes.push(addFinding(absUrl, mapUrl, 'Next.js .map probe', true));
+            } catch (e) { }
+        }
+
+        // Nuxt.js _nuxt/
+        const nuxtRegex = /["']((?:\/_nuxt\/[a-zA-Z0-9._\/\-]+)\.js(?:\?[^"']*)?)['"]/gi;
+        let nux;
+        while ((nux = nuxtRegex.exec(bodyHTML)) !== null) {
+            try {
+                const absUrl = new URL(nux[1], window.location.href).href;
+                const mapUrl = absUrl.split('?')[0] + '.map';
+                if (!seenMapUrls.has(mapUrl)) chunkProbes.push(addFinding(absUrl, mapUrl, 'Nuxt.js .map probe', true));
+            } catch (e) { }
+        }
+
+        if (chunkProbes.length > 0) await Promise.all(chunkProbes.slice(0, 15));
+    } catch (e) { /* safe */ }
+
+    // ============================================
+    // 5. Filter out noise
+    // ============================================
+    findings.sourcemaps = findings.sourcemaps.filter(sm =>
+        sm.accessible || !sm.source.includes('probe')
+    );
+}
+
+
 // ---- Save Findings to Storage ----
 function saveFindings(findings) {
     const host = window.location.hostname;
@@ -947,6 +1257,7 @@ function saveFindings(findings) {
         data.endpoints = Array.from(findings.endpoints);
         data.js_files = Array.from(findings.js_files);
         data.js_protections = findings.js_protections;
+        data.sourcemaps = findings.sourcemaps;
         data.lastScan = new Date().toISOString();
         data.pageUrl = window.location.href;
 

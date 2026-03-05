@@ -289,3 +289,25 @@ function checkServerInfo(headerMap, analysis) {
         }
     });
 }
+
+// ---- Source Map Download Handler (v3.3) ----
+chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+    if (request.action === 'downloadSourceMap' && request.url) {
+        try {
+            const filename = request.url.split('/').pop().split('?')[0] || 'sourcemap.map';
+            chrome.downloads.download({
+                url: request.url,
+                filename: `BountySleuth_SourceMaps/${filename}`,
+                saveAs: false
+            }, (downloadId) => {
+                if (chrome.runtime.lastError) {
+                    console.error('BountySleuth download error:', chrome.runtime.lastError);
+                }
+            });
+        } catch (e) {
+            console.error('BountySleuth download error:', e);
+        }
+        sendResponse({ status: 'download_started' });
+    }
+    return true;
+});
