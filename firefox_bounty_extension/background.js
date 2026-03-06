@@ -77,7 +77,8 @@ chrome.webRequest.onHeadersReceived.addListener(
                 security_headers_missing: [],
                 security_headers_present: [],
                 cors: null,
-                server_info: []
+                server_info: [],
+                cache_issues: []
             };
 
             const headerMap = {};
@@ -98,6 +99,9 @@ chrome.webRequest.onHeadersReceived.addListener(
 
             // 4. Server Info Leaks
             checkServerInfo(headerMap, analysis);
+
+            // 5. Cache Security Analysis
+            checkCacheSecurity(headerMap, analysis, details.url, isMain);
 
             // Save and Sync
             chrome.storage.local.get([host], (result) => {
@@ -123,6 +127,21 @@ chrome.webRequest.onHeadersReceived.addListener(
                     if (!data.cors_history) data.cors_history = [];
                     if (!data.cors_history.some(c => c.origin === analysis.cors.origin)) {
                         data.cors_history.push({ url: details.url, ...analysis.cors });
+                    }
+                }
+
+                // Cache Issues (merge)
+                if (analysis.cache_issues && analysis.cache_issues.length > 0) {
+                    if (!data.cache_issues) data.cache_issues = [];
+                    analysis.cache_issues.forEach(issue => {
+                        // Avoid duplicates by URL
+                        if (!data.cache_issues.some(c => c.url === issue.url)) {
+                            data.cache_issues.push(issue);
+                        }
+                    });
+                    // Keep only last 50 cache issues
+                    if (data.cache_issues.length > 50) {
+                        data.cache_issues = data.cache_issues.slice(-50);
                     }
                 }
 
@@ -287,6 +306,230 @@ function checkServerInfo(headerMap, analysis) {
         if (headerMap[h]) {
             analysis.server_info.push(`${h}: ${headerMap[h]}`);
         }
+    });
+}
+
+// ---- Cache Security Analysis (Enhanced v3.6) ----
+function checkCacheSecurity(headerMap, analysis, requestUrl, isMainFrame) {
+    const cacheControl = (headerMap['cache-control'] || '').toLowerCase();
+    const vary = (headerMap['vary'] || '').toLowerCase();
+    const cdnCacheControl = headerMap['cdn-cache-control'] || headerMap['cloudflare-cdn-cache-control'] || headerMap['surrogate-control'];
+    const pragma = (headerMap['pragma'] || '').toLowerCase();
+    const xCache = headerMap['x-cache'] || '';
+    const cfCacheStatus = headerMap['cf-cache-status'] || '';
+    const age = headerMap['age'] || '';
+    const etag = headerMap['etag'] || '';
+    const lastModified = headerMap['last-modified'] || '';
+
+    // Sensitive URL patterns that should NOT be publicly cached
+    const sensitivePatterns = /\/(api|auth|login|logout|register|signup|password|reset|account|profile|admin|dashboard|checkout|payment|order|cart|session|token|user|me|private|internal|settings|billing|subscription|graphql|oauth|callback|webhook)/i;
+    const isSensitiveUrl = sensitivePatterns.test(requestUrl);
+
+    // Web Cache Deception patterns (path confusion) - sensitive URL ending with static extension
+    const hasPathConfusion = /\/[^\/]+\.(css|js|jpg|jpeg|png|gif|ico|svg|woff|woff2|ttf|eot|pdf)$/i.test(requestUrl) && isSensitiveUrl;
+
+    // Parse cache-control directives
+    const isPublic = cacheControl.includes('public');
+    const isPrivate = cacheControl.includes('private');
+    const hasNoStore = cacheControl.includes('no-store');
+    const hasNoCache = cacheControl.includes('no-cache');
+    const hasMustRevalidate = cacheControl.includes('must-revalidate');
+    const hasImmutable = cacheControl.includes('immutable');
+    const maxAgeMatch = cacheControl.match(/max-age\s*=\s*(\d+)/);
+    const maxAge = maxAgeMatch ? parseInt(maxAgeMatch[1]) : null;
+    const sMaxAgeMatch = cacheControl.match(/s-maxage\s*=\s*(\d+)/);
+    const sMaxAge = sMaxAgeMatch ? parseInt(sMaxAgeMatch[1]) : null;
+
+    let issues = [];
+
+    // Check 1: Public caching on sensitive endpoints
+    if (isPublic && isSensitiveUrl) {
+        issues.push({
+            url: requestUrl,
+            type: 'public-sensitive',
+            severity: 'CRITICAL',
+            verdict: '🚨 PUBLIC caching on sensitive endpoint!',
+            header: `Cache-Control: ${cacheControl}`,
+            recommendation: 'Use Cache-Control: private, no-store for sensitive endpoints'
+        });
+    }
+
+    // Check 2: Missing no-store on authenticated/sensitive pages
+    if (isSensitiveUrl && !hasNoStore && !isPrivate && isMainFrame) {
+        const hasAuthHeader = headerMap['authorization'] || headerMap['set-cookie'];
+        if (hasAuthHeader || isPublic) {
+            issues.push({
+                url: requestUrl,
+                type: 'missing-no-store',
+                severity: 'HIGH',
+                verdict: '⚠️ Sensitive endpoint without no-store directive',
+                header: cacheControl ? `Cache-Control: ${cacheControl}` : 'No Cache-Control header',
+                recommendation: 'Add Cache-Control: no-store to prevent caching of sensitive data'
+            });
+        }
+    }
+
+    // Check 3: Long max-age on dynamic content
+    if (maxAge && maxAge > 86400 && isMainFrame) {
+        issues.push({
+            url: requestUrl,
+            type: 'long-cache',
+            severity: 'LOW',
+            verdict: `⚠️ Long cache duration: ${maxAge} seconds (${Math.round(maxAge / 86400)} days)`,
+            header: `Cache-Control: ${cacheControl}`,
+            recommendation: 'Consider shorter cache times for dynamic content'
+        });
+    }
+
+    // Check 4: Vary header missing Authorization for authenticated endpoints
+    if (isSensitiveUrl && !vary.includes('authorization') && !hasNoStore) {
+        const hasAuthCookie = headerMap['set-cookie'] && /session|auth|token/i.test(headerMap['set-cookie']);
+        if (hasAuthCookie) {
+            issues.push({
+                url: requestUrl,
+                type: 'vary-missing-auth',
+                severity: 'MEDIUM',
+                verdict: '⚠️ Vary header missing Authorization — cached responses may leak between users',
+                header: vary ? `Vary: ${vary}` : 'No Vary header',
+                recommendation: 'Add Vary: Authorization, Cookie to prevent cache poisoning'
+            });
+        }
+    }
+
+    // Check 5: CDN caching issues
+    if (cdnCacheControl && isSensitiveUrl) {
+        const cdnPublic = cdnCacheControl.toLowerCase().includes('public');
+        if (cdnPublic) {
+            issues.push({
+                url: requestUrl,
+                type: 'cdn-public-sensitive',
+                severity: 'HIGH',
+                verdict: '🚨 CDN configured to publicly cache sensitive endpoint',
+                header: `CDN-Cache-Control: ${cdnCacheControl}`,
+                recommendation: 'Configure CDN to bypass cache for authenticated/sensitive routes'
+            });
+        }
+    }
+
+    // Check 6: s-maxage (shared cache) on sensitive endpoints
+    if (sMaxAge && sMaxAge > 0 && isSensitiveUrl) {
+        issues.push({
+            url: requestUrl,
+            type: 's-maxage-sensitive',
+            severity: 'HIGH',
+            verdict: `⚠️ Shared cache (s-maxage=${sMaxAge}) enabled on sensitive endpoint`,
+            header: `Cache-Control: ${cacheControl}`,
+            recommendation: 'Remove s-maxage or add private directive for sensitive endpoints'
+        });
+    }
+
+    // Check 7: Web Cache Deception vulnerability pattern
+    if (hasPathConfusion && !isPrivate && !hasNoStore) {
+        issues.push({
+            url: requestUrl,
+            type: 'cache-deception',
+            severity: 'HIGH',
+            verdict: '🚨 Potential Web Cache Deception — sensitive URL with static extension',
+            header: `URL ends with static extension on sensitive path`,
+            recommendation: 'Ensure Cache-Control: private, no-store on all authenticated responses regardless of URL extension'
+        });
+    }
+
+    // Check 8: X-Cache HIT on sensitive endpoint (evidence of caching)
+    if (isSensitiveUrl && (xCache.toLowerCase().includes('hit') || cfCacheStatus.toLowerCase() === 'hit')) {
+        issues.push({
+            url: requestUrl,
+            type: 'cache-hit-sensitive',
+            severity: 'HIGH',
+            verdict: '🚨 Cache HIT detected on sensitive endpoint — response IS being cached!',
+            header: xCache ? `X-Cache: ${xCache}` : `CF-Cache-Status: ${cfCacheStatus}`,
+            recommendation: 'Investigate why sensitive response is being cached. Add no-store directive.'
+        });
+    }
+
+    // Check 9: Stale content allowed (missing must-revalidate on sensitive)
+    if (isSensitiveUrl && maxAge && !hasMustRevalidate && !hasNoStore && !isPrivate) {
+        issues.push({
+            url: requestUrl,
+            type: 'stale-allowed',
+            severity: 'MEDIUM',
+            verdict: '⚠️ Missing must-revalidate — stale cached content may be served',
+            header: `Cache-Control: ${cacheControl}`,
+            recommendation: 'Add must-revalidate to force revalidation after max-age expires'
+        });
+    }
+
+    // Check 10: Immutable on dynamic/sensitive content
+    if (hasImmutable && isSensitiveUrl) {
+        issues.push({
+            url: requestUrl,
+            type: 'immutable-sensitive',
+            severity: 'MEDIUM',
+            verdict: '⚠️ Immutable directive on sensitive/dynamic content',
+            header: `Cache-Control: ${cacheControl}`,
+            recommendation: 'Remove immutable from sensitive endpoints — only use for truly static assets with versioned URLs'
+        });
+    }
+
+    // Check 11: ETag/Last-Modified without no-store (cache timing attacks)
+    if (isSensitiveUrl && (etag || lastModified) && !hasNoStore) {
+        issues.push({
+            url: requestUrl,
+            type: 'conditional-cache-sensitive',
+            severity: 'LOW',
+            verdict: '⚠️ ETag/Last-Modified on sensitive endpoint — enables cache-based timing attacks',
+            header: etag ? `ETag: ${etag.substring(0, 30)}...` : `Last-Modified: ${lastModified}`,
+            recommendation: 'Use no-store for sensitive data to prevent conditional request timing attacks'
+        });
+    }
+
+    // Check 12: Cache Poisoning via Unkeyed Headers detection
+    // Check if dangerous headers are present that could be used for poisoning
+    const poisonableHeaders = ['x-forwarded-host', 'x-original-url', 'x-rewrite-url', 'x-forwarded-scheme', 'x-forwarded-proto'];
+    const variedHeaders = vary.split(',').map(h => h.trim().toLowerCase());
+
+    poisonableHeaders.forEach(header => {
+        if (headerMap[header] && !variedHeaders.includes(header) && !hasNoStore && !isPrivate) {
+            if (isMainFrame || isSensitiveUrl) {
+                issues.push({
+                    url: requestUrl,
+                    type: 'unkeyed-header',
+                    severity: 'HIGH',
+                    verdict: `🚨 Potential Cache Poisoning — ${header} present but not in Vary`,
+                    header: `${header}: ${headerMap[header]} (not in Vary: ${vary || 'none'})`,
+                    recommendation: `Add "${header}" to Vary header or use Cache-Control: private`
+                });
+            }
+        }
+    });
+
+    // Check 13: Age header indicates long caching on sensitive
+    if (isSensitiveUrl && age && parseInt(age) > 60) {
+        issues.push({
+            url: requestUrl,
+            type: 'aged-cache',
+            severity: 'MEDIUM',
+            verdict: `⚠️ Cached response is ${age} seconds old — sensitive data may be stale/shared`,
+            header: `Age: ${age}`,
+            recommendation: 'Sensitive data should not be served from cache with high Age values'
+        });
+    }
+
+    // Check 14: Pragma: no-cache without Cache-Control: no-store (incomplete)
+    if (pragma.includes('no-cache') && !hasNoStore && !hasNoCache && isSensitiveUrl) {
+        issues.push({
+            url: requestUrl,
+            type: 'pragma-incomplete',
+            severity: 'LOW',
+            verdict: '⚠️ Pragma: no-cache without Cache-Control: no-cache/no-store',
+            header: `Pragma: ${pragma}, Cache-Control: ${cacheControl || 'none'}`,
+            recommendation: 'Pragma is HTTP/1.0 — also use Cache-Control: no-store for HTTP/1.1 caches'
+        });
+    }
+
+    // Add all issues to analysis
+    issues.forEach(issue => {
+        analysis.cache_issues.push(issue);
     });
 }
 
@@ -466,6 +709,20 @@ async function unpackSourceMap(url, hostname) {
 
     // Extract packages for the NPM analyzer
     const packageMap = {};
+
+    // Filter out build tool artifacts and invalid package names
+    const invalidPackagePatterns = [
+        /^\./, // Packages starting with . (like .pnpm, .federation, .cache)
+        /^_/, // Packages starting with _ (internal)
+        /^node_modules$/, // The folder itself
+        /^\d/, // Packages starting with numbers (invalid npm names)
+    ];
+    const buildToolArtifacts = new Set([
+        '.pnpm', '.federation', '.cache', '.vite', '.turbo', '.next', '.nuxt',
+        '.parcel-cache', '.webpack', '.rollup', '.esbuild', '.swc',
+        'node_modules', '__virtual__', '__federation__', '__mf__'
+    ]);
+
     map.sources.forEach(s => {
         const normalized = s
             .replace(/^webpack:\/\/\//i, '')
@@ -474,6 +731,13 @@ async function unpackSourceMap(url, hostname) {
         const nmMatch = normalized.match(/node_modules\/((?:@[^/]+\/)?[^/]+)/);
         if (nmMatch) {
             const pkgName = nmMatch[1];
+
+            // Skip invalid/artifact packages
+            if (buildToolArtifacts.has(pkgName)) return;
+            if (invalidPackagePatterns.some(pattern => pattern.test(pkgName))) return;
+            // Skip if package name contains invalid characters for npm
+            if (!/^(@[a-z0-9-~][a-z0-9-._~]*\/)?[a-z0-9-~][a-z0-9-._~]*$/.test(pkgName)) return;
+
             if (!packageMap[pkgName]) {
                 packageMap[pkgName] = { name: pkgName, fileCount: 0, isScoped: pkgName.startsWith('@') };
             }

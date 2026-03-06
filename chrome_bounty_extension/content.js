@@ -331,7 +331,8 @@ async function scanPage() {
         endpoints: new Set(),
         js_files: new Set(),
         js_protections: [],
-        sourcemaps: []
+        sourcemaps: [],
+        sri_issues: [] // Subresource Integrity issues
     };
 
     // =============================================
@@ -386,7 +387,12 @@ async function scanPage() {
     await scanSourceMaps(findings);
 
     // =============================================
-    // 11. SAVE ALL FINDINGS
+    // 11. SUBRESOURCE INTEGRITY (SRI) CHECK
+    // =============================================
+    scanSRI(findings);
+
+    // =============================================
+    // 12. SAVE ALL FINDINGS
     // =============================================
     saveFindings(findings);
 }
@@ -1039,6 +1045,330 @@ function scanCloudAssets(findings) {
     });
 }
 
+// ---- Subresource Integrity (SRI) Scanner (Enhanced v3.6) ----
+function scanSRI(findings) {
+    const currentOrigin = window.location.origin;
+
+    // Known CDN domains that should have SRI
+    const knownCDNs = [
+        'cdn.jsdelivr.net', 'cdnjs.cloudflare.com', 'unpkg.com',
+        'ajax.googleapis.com', 'code.jquery.com', 'stackpath.bootstrapcdn.com',
+        'maxcdn.bootstrapcdn.com', 'cdn.bootcdn.net', 'cdn.staticfile.org',
+        'lib.baomitu.com', 'ajax.aspnetcdn.com', 'cdn.rawgit.com',
+        'rawcdn.githack.com', 'gitcdn.xyz', 'cdn.skypack.dev',
+        'esm.sh', 'esm.run', 'ga.jspm.io', 'fonts.googleapis.com',
+        'use.fontawesome.com', 'kit.fontawesome.com', 'cdn.tailwindcss.com',
+        'cdn.ckeditor.com', 'cdn.tiny.cloud', 'cdn.quilljs.com'
+    ];
+
+    // Helper to check if integrity hash is weak
+    const isWeakIntegrity = (integrity) => {
+        if (!integrity) return false;
+        // SHA-256 is weaker than SHA-384/SHA-512
+        return integrity.startsWith('sha256-') && !integrity.includes('sha384-') && !integrity.includes('sha512-');
+    };
+
+    // Check <script> tags
+    const scripts = document.querySelectorAll('script[src]');
+    scripts.forEach(script => {
+        const src = script.getAttribute('src');
+        if (!src) return;
+
+        try {
+            const url = new URL(src, window.location.href);
+            const isSameOrigin = url.origin === currentOrigin;
+            const isKnownCDN = knownCDNs.some(cdn => url.hostname.includes(cdn));
+            const hasIntegrity = script.hasAttribute('integrity');
+            const integrityValue = script.getAttribute('integrity') || '';
+            const hasCrossorigin = script.hasAttribute('crossorigin');
+            const isModule = script.getAttribute('type') === 'module';
+
+            // Check for crossorigin without integrity (suspicious)
+            if (!isSameOrigin && hasCrossorigin && !hasIntegrity) {
+                findings.sri_issues.push({
+                    type: 'crossorigin-no-integrity',
+                    url: url.href,
+                    hostname: url.hostname,
+                    hasIntegrity: false,
+                    hasCrossorigin: true,
+                    isKnownCDN: isKnownCDN,
+                    severity: 'HIGH',
+                    verdict: '🚨 crossorigin attribute WITHOUT integrity — SRI was likely removed or forgotten!',
+                    recommendation: 'Add integrity hash or remove crossorigin if SRI not needed'
+                });
+                return; // Don't double-report
+            }
+
+            // Check for weak integrity hash
+            if (hasIntegrity && isWeakIntegrity(integrityValue)) {
+                findings.sri_issues.push({
+                    type: 'weak-integrity',
+                    url: url.href,
+                    hostname: url.hostname,
+                    hasIntegrity: true,
+                    hasCrossorigin: hasCrossorigin,
+                    isKnownCDN: isKnownCDN,
+                    severity: 'LOW',
+                    verdict: '⚠️ Using SHA-256 integrity — SHA-384 or SHA-512 recommended',
+                    recommendation: 'Upgrade to sha384-... or sha512-... for stronger integrity'
+                });
+            }
+
+            // Only flag 3rd party scripts without SRI
+            if (!isSameOrigin && !hasIntegrity) {
+                let severity = 'MEDIUM';
+                let verdict = '⚠️ 3rd party script without SRI';
+
+                if (isKnownCDN) {
+                    severity = 'HIGH';
+                    verdict = '🚨 CDN script without integrity hash — supply chain risk!';
+                }
+
+                // ES modules are higher risk
+                if (isModule) {
+                    severity = 'HIGH';
+                    verdict = '🚨 ES Module from 3rd party without SRI — can import more code!';
+                }
+
+                // Check for dangerous patterns
+                const isDynamic = /\?|&|{{|%7B%7B/.test(src);
+                if (isDynamic) {
+                    severity = 'HIGH';
+                    verdict = '🚨 Dynamic 3rd party script URL without SRI';
+                }
+
+                findings.sri_issues.push({
+                    type: isModule ? 'module' : 'script',
+                    url: url.href,
+                    hostname: url.hostname,
+                    hasIntegrity: false,
+                    hasCrossorigin: hasCrossorigin,
+                    isKnownCDN: isKnownCDN,
+                    severity: severity,
+                    verdict: verdict,
+                    recommendation: 'Add integrity="sha384-..." and crossorigin="anonymous"'
+                });
+            }
+        } catch (e) { /* invalid URL */ }
+    });
+
+    // Check <link rel="stylesheet"> tags
+    const stylesheets = document.querySelectorAll('link[rel="stylesheet"][href]');
+    stylesheets.forEach(link => {
+        const href = link.getAttribute('href');
+        if (!href) return;
+
+        try {
+            const url = new URL(href, window.location.href);
+            const isSameOrigin = url.origin === currentOrigin;
+            const isKnownCDN = knownCDNs.some(cdn => url.hostname.includes(cdn));
+            const hasIntegrity = link.hasAttribute('integrity');
+
+            if (!isSameOrigin && !hasIntegrity) {
+                let severity = 'LOW';
+                let verdict = '⚠️ 3rd party stylesheet without SRI';
+
+                if (isKnownCDN) {
+                    severity = 'MEDIUM';
+                    verdict = '⚠️ CDN stylesheet without integrity hash';
+                }
+
+                findings.sri_issues.push({
+                    type: 'stylesheet',
+                    url: url.href,
+                    hostname: url.hostname,
+                    hasIntegrity: false,
+                    hasCrossorigin: link.hasAttribute('crossorigin'),
+                    isKnownCDN: isKnownCDN,
+                    severity: severity,
+                    verdict: verdict,
+                    recommendation: 'Add integrity="sha384-..." and crossorigin="anonymous"'
+                });
+            }
+        } catch (e) { /* invalid URL */ }
+    });
+
+    // Check <link rel="preload/prefetch"> - often overlooked!
+    const preloads = document.querySelectorAll('link[rel="preload"][href], link[rel="prefetch"][href], link[rel="modulepreload"][href]');
+    preloads.forEach(link => {
+        const href = link.getAttribute('href');
+        const asType = link.getAttribute('as');
+        if (!href) return;
+
+        try {
+            const url = new URL(href, window.location.href);
+            const isSameOrigin = url.origin === currentOrigin;
+            const hasIntegrity = link.hasAttribute('integrity');
+            const relType = link.getAttribute('rel');
+
+            // Preloaded scripts/styles from 3rd party should have SRI
+            if (!isSameOrigin && !hasIntegrity && (asType === 'script' || asType === 'style' || relType === 'modulepreload')) {
+                findings.sri_issues.push({
+                    type: 'preload',
+                    url: url.href,
+                    hostname: url.hostname,
+                    hasIntegrity: false,
+                    hasCrossorigin: link.hasAttribute('crossorigin'),
+                    isKnownCDN: false,
+                    severity: 'MEDIUM',
+                    verdict: `⚠️ Preloaded ${asType || 'module'} from 3rd party without SRI`,
+                    recommendation: 'Add integrity attribute to preload/prefetch links'
+                });
+            }
+        } catch (e) { /* invalid URL */ }
+    });
+
+    // Check 3rd party iframes (uncontrolled code execution)
+    const iframes = document.querySelectorAll('iframe[src]');
+    iframes.forEach(iframe => {
+        const src = iframe.getAttribute('src');
+        if (!src || src.startsWith('about:') || src.startsWith('javascript:')) return;
+
+        try {
+            const url = new URL(src, window.location.href);
+            const isSameOrigin = url.origin === currentOrigin;
+            const sandbox = iframe.getAttribute('sandbox');
+
+            if (!isSameOrigin) {
+                let severity = 'LOW';
+                let verdict = '⚠️ 3rd party iframe — runs uncontrolled code';
+
+                // Check if sandbox is too permissive
+                if (!sandbox) {
+                    severity = 'MEDIUM';
+                    verdict = '⚠️ 3rd party iframe WITHOUT sandbox — full access to own origin';
+                } else if (sandbox.includes('allow-scripts') && sandbox.includes('allow-same-origin')) {
+                    severity = 'MEDIUM';
+                    verdict = '⚠️ 3rd party iframe with allow-scripts + allow-same-origin — can escape sandbox!';
+                }
+
+                // Known tracking/ad iframes are lower priority
+                const isTracker = /googletagmanager|doubleclick|facebook|analytics|ads|pixel|track/i.test(url.hostname);
+                if (!isTracker) {
+                    findings.sri_issues.push({
+                        type: 'iframe',
+                        url: url.href,
+                        hostname: url.hostname,
+                        hasIntegrity: false,
+                        hasCrossorigin: false,
+                        isKnownCDN: false,
+                        severity: severity,
+                        verdict: verdict,
+                        recommendation: sandbox ? 'Review sandbox permissions' : 'Add sandbox attribute to restrict capabilities'
+                    });
+                }
+            }
+        } catch (e) { /* invalid URL */ }
+    });
+
+    // Check for inline scripts loading external resources dynamically
+    const inlineScripts = document.querySelectorAll('script:not([src])');
+    inlineScripts.forEach(script => {
+        const code = script.textContent || '';
+
+        // Check for dynamic script loading patterns
+        const dynamicLoadPatterns = [
+            { pattern: /document\.createElement\s*\(\s*['"]script['"]\s*\)/gi, type: 'createElement' },
+            { pattern: /\.src\s*=\s*['"`][^'"`]*https?:\/\//gi, type: 'src-assignment' },
+            { pattern: /new\s+Function\s*\(/gi, type: 'new-Function' },
+            { pattern: /import\s*\(\s*['"`]https?:\/\//gi, type: 'dynamic-import' },
+            { pattern: /new\s+Worker\s*\(\s*['"`]https?:\/\//gi, type: 'web-worker' },
+            { pattern: /new\s+SharedWorker\s*\(\s*['"`]https?:\/\//gi, type: 'shared-worker' },
+            { pattern: /navigator\.serviceWorker\.register\s*\(\s*['"`]https?:\/\//gi, type: 'service-worker' }
+        ];
+
+        const foundPatterns = new Set();
+        dynamicLoadPatterns.forEach(({ pattern, type }) => {
+            if (pattern.test(code) && !foundPatterns.has(type)) {
+                foundPatterns.add(type);
+
+                let severity = 'MEDIUM';
+                let verdict = '⚠️ Dynamic script loading detected — verify SRI is applied';
+
+                if (type === 'service-worker') {
+                    severity = 'HIGH';
+                    verdict = '🚨 3rd party Service Worker registration — persistent code execution!';
+                } else if (type === 'web-worker' || type === 'shared-worker') {
+                    severity = 'HIGH';
+                    verdict = '🚨 3rd party Worker script — runs in separate thread without SRI support';
+                }
+
+                findings.sri_issues.push({
+                    type: `dynamic-${type}`,
+                    url: `(${type} detected in inline script)`,
+                    hostname: 'inline',
+                    hasIntegrity: false,
+                    hasCrossorigin: false,
+                    isKnownCDN: false,
+                    severity: severity,
+                    verdict: verdict,
+                    recommendation: type.includes('worker') ? 'Workers should be same-origin' : 'Ensure dynamically loaded scripts use integrity checks',
+                    snippet: code.substring(0, 100) + '...'
+                });
+            }
+        });
+    });
+
+    // Check for importmap (ES module imports mapping)
+    const importMaps = document.querySelectorAll('script[type="importmap"]');
+    importMaps.forEach(script => {
+        try {
+            const mapContent = JSON.parse(script.textContent || '{}');
+            const imports = mapContent.imports || {};
+
+            Object.entries(imports).forEach(([name, url]) => {
+                if (typeof url === 'string' && url.startsWith('http')) {
+                    try {
+                        const parsedUrl = new URL(url);
+                        if (parsedUrl.origin !== currentOrigin) {
+                            findings.sri_issues.push({
+                                type: 'importmap',
+                                url: url,
+                                hostname: parsedUrl.hostname,
+                                hasIntegrity: false,
+                                hasCrossorigin: false,
+                                isKnownCDN: false,
+                                severity: 'HIGH',
+                                verdict: `🚨 Import map points "${name}" to 3rd party — no integrity possible!`,
+                                recommendation: 'Use same-origin modules or bundler-based imports with SRI'
+                            });
+                        }
+                    } catch (e) { /* invalid URL */ }
+                }
+            });
+        } catch (e) { /* invalid JSON */ }
+    });
+
+    // Check stylesheets for @import (CSS can load more CSS)
+    const styleElements = document.querySelectorAll('style');
+    styleElements.forEach(style => {
+        const cssText = style.textContent || '';
+        const importMatches = cssText.match(/@import\s+(?:url\s*\(\s*)?['"]?(https?:\/\/[^'"\s)]+)/gi);
+
+        if (importMatches) {
+            importMatches.forEach(match => {
+                const urlMatch = match.match(/https?:\/\/[^'"\s)]+/i);
+                if (urlMatch) {
+                    try {
+                        const url = new URL(urlMatch[0]);
+                        findings.sri_issues.push({
+                            type: 'css-import',
+                            url: url.href,
+                            hostname: url.hostname,
+                            hasIntegrity: false,
+                            hasCrossorigin: false,
+                            isKnownCDN: false,
+                            severity: 'MEDIUM',
+                            verdict: '⚠️ CSS @import loads 3rd party stylesheet — no SRI for @import',
+                            recommendation: 'Use <link> tags with integrity instead of @import'
+                        });
+                    } catch (e) { /* invalid URL */ }
+                }
+            });
+        }
+    });
+}
+
 // ---- Endpoint Miner (Filtered v3.5) ----
 function mineEndpoints(findings) {
     const staticExtRegex = /\.(css|map|woff2?|ttf|eot|otf|png|jpe?g|gif|svg|ico|webp|avif|bmp|mp4|webm|mp3|wav|ogg|m4a|mov|avi|pdf|docx?|xlsx?|pptx?|txt|rtf|zip|rar|7z|tar|gz|tgz|xml|json|apk|exe|dmg|iso)(\?.*)?$/i;
@@ -1420,6 +1750,7 @@ function saveFindings(findings) {
         data.js_files = Array.from(findings.js_files);
         data.js_protections = findings.js_protections;
         data.sourcemaps = findings.sourcemaps;
+        data.sri_issues = findings.sri_issues;
         data.lastScan = new Date().toISOString();
         data.pageUrl = window.location.href;
 

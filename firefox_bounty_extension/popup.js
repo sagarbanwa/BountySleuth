@@ -185,6 +185,8 @@ function loadData(host) {
         renderEndpoints(data);
         renderSourceMaps(data);
         renderNpmPackages(data);
+        renderCacheIssues(data);
+        renderSRIIssues(data);
 
         // Render JS Protections badge if found
         renderProtections(data);
@@ -784,6 +786,101 @@ function renderNpmPackages(data) {
                 window.open(pkg.takeoverUrl, '_blank');
             };
         }
+
+        list.appendChild(li);
+    });
+}
+
+// ---- Cache Security Issues ----
+function renderCacheIssues(data) {
+    const issues = data.cache_issues || [];
+    const criticalCount = issues.filter(i => i.severity === 'CRITICAL').length;
+    const highCount = issues.filter(i => i.severity === 'HIGH').length;
+
+    let badgeSeverity = 'info';
+    if (criticalCount > 0) badgeSeverity = 'critical';
+    else if (highCount > 0) badgeSeverity = 'high';
+    setCount('cacheCount', issues.length, issues.length > 0 ? badgeSeverity : null);
+
+    const list = document.getElementById('cachelist');
+    const summary = document.getElementById('cacheSummary');
+    list.innerHTML = '';
+
+    if (issues.length === 0) {
+        list.innerHTML = '<li class="empty-state">No cache security issues detected.</li>';
+        summary.textContent = 'Cache-Control headers appear properly configured.';
+        return;
+    }
+
+    summary.textContent = `Found ${issues.length} cache issue${issues.length > 1 ? 's' : ''}. ${criticalCount > 0 ? criticalCount + ' critical!' : ''}`;
+
+    issues.forEach(issue => {
+        let sevClass = 'info';
+        if (issue.severity === 'CRITICAL') sevClass = 'critical';
+        else if (issue.severity === 'HIGH') sevClass = 'high';
+        else if (issue.severity === 'MEDIUM') sevClass = 'medium';
+
+        const urlShort = issue.url.length > 60 ? '...' + issue.url.slice(-57) : issue.url;
+        let text = `${urlShort}\n${issue.verdict}`;
+        if (issue.header) text += `\n📋 ${issue.header}`;
+        if (issue.recommendation) text += `\n💡 ${issue.recommendation}`;
+
+        const li = createListItem(text, sevClass);
+        li.appendChild(createSevTag(issue.severity));
+        list.appendChild(li);
+    });
+}
+
+// ---- Subresource Integrity (SRI) Issues ----
+function renderSRIIssues(data) {
+    const issues = data.sri_issues || [];
+    const highCount = issues.filter(i => i.severity === 'HIGH').length;
+    const mediumCount = issues.filter(i => i.severity === 'MEDIUM').length;
+
+    let badgeSeverity = 'info';
+    if (highCount > 0) badgeSeverity = 'high';
+    else if (mediumCount > 0) badgeSeverity = 'medium';
+    setCount('sriCount', issues.length, issues.length > 0 ? badgeSeverity : null);
+
+    const list = document.getElementById('srilist');
+    const summary = document.getElementById('sriSummary');
+    list.innerHTML = '';
+
+    if (issues.length === 0) {
+        list.innerHTML = '<li class="empty-state">All 3rd party resources have integrity hashes or are same-origin.</li>';
+        summary.textContent = 'No SRI issues detected.';
+        return;
+    }
+
+    const cdnCount = issues.filter(i => i.isKnownCDN).length;
+    summary.textContent = `Found ${issues.length} resource${issues.length > 1 ? 's' : ''} without SRI. ${cdnCount > 0 ? cdnCount + ' from CDNs!' : ''}`;
+
+    issues.forEach(issue => {
+        let sevClass = 'info';
+        if (issue.severity === 'HIGH') sevClass = 'high';
+        else if (issue.severity === 'MEDIUM') sevClass = 'medium';
+        else if (issue.severity === 'LOW') sevClass = 'low';
+
+        const typeIcon = issue.type === 'script' ? '📜' : issue.type === 'stylesheet' ? '🎨' : '⚙️';
+        const urlShort = issue.url.length > 55 ? '...' + issue.url.slice(-52) : issue.url;
+
+        let text = `${typeIcon} ${issue.type.toUpperCase()}: ${issue.hostname}`;
+        text += `\n${issue.verdict}`;
+        text += `\n🔗 ${urlShort}`;
+        if (issue.recommendation) text += `\n💡 ${issue.recommendation}`;
+
+        const li = createListItem(text, sevClass);
+        li.appendChild(createSevTag(issue.severity));
+
+        // Make clickable to open URL
+        li.style.cursor = 'pointer';
+        li.title = 'Click to open resource URL';
+        li.onclick = (e) => {
+            e.stopPropagation();
+            if (issue.url && issue.url !== '(dynamic script loading detected)') {
+                window.open(issue.url, '_blank');
+            }
+        };
 
         list.appendChild(li);
     });

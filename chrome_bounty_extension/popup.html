@@ -197,6 +197,34 @@
             </div>
         </div>
 
+        <!-- Cache Security -->
+        <div class="card">
+            <h2 class="toggle" data-target="cacheContent">
+                <span>💾 Cache Security</span>
+                <span id="cacheCount" class="count">0</span>
+            </h2>
+            <div class="content hidden" id="cacheContent">
+                <div id="cacheSummary" style="font-size: 11px; margin-bottom: 8px; color: var(--text-secondary);">
+                    Analyzes Cache-Control headers for security misconfigurations.
+                </div>
+                <ul id="cachelist" class="list"></ul>
+            </div>
+        </div>
+
+        <!-- Subresource Integrity -->
+        <div class="card">
+            <h2 class="toggle" data-target="sriContent">
+                <span>🔗 Subresource Integrity (SRI)</span>
+                <span id="sriCount" class="count">0</span>
+            </h2>
+            <div class="content hidden" id="sriContent">
+                <div id="sriSummary" style="font-size: 11px; margin-bottom: 8px; color: var(--text-secondary);">
+                    3rd party resources without integrity hashes are supply chain risks.
+                </div>
+                <ul id="srilist" class="list"></ul>
+            </div>
+        </div>
+
         <!-- Cookie Security -->
         <div class="card">
             <h2 class="toggle" data-target="cookieContent">
