@@ -691,11 +691,18 @@ function renderEndpoints(data) {
     }
 }
 
-// ---- NPM Packages ----
+// ---- NPM Packages (Dependency Confusion / Takeover Detection) ----
 function renderNpmPackages(data) {
     const packages = data.npm_analysis || [];
-    const issues = packages.filter(p => p.severity === 'HIGH');
-    setCount('npmCount', packages.length, issues.length > 0 ? 'high' : (packages.length > 0 ? 'info' : null));
+    const criticalCount = packages.filter(p => p.severity === 'CRITICAL').length;
+    const highCount = packages.filter(p => p.severity === 'HIGH').length;
+    const takeoverTargets = packages.filter(p => p.isTakeoverTarget).length;
+
+    // Set badge color based on severity
+    let badgeSeverity = 'info';
+    if (criticalCount > 0) badgeSeverity = 'critical';
+    else if (highCount > 0) badgeSeverity = 'high';
+    setCount('npmCount', packages.length, packages.length > 0 ? badgeSeverity : null);
 
     const list = document.getElementById('npmlist');
     const summary = document.getElementById('npmSummary');
@@ -707,23 +714,44 @@ function renderNpmPackages(data) {
         return;
     }
 
-    const privateCount = packages.filter(p => !p.isPublic).length;
-    summary.textContent = `Found ${packages.length} packages. ${privateCount} appear to be private/internal.`;
+    // Summary with takeover stats
+    const privateCount = packages.filter(p => p.isPublic === false).length;
+    let summaryText = `Found ${packages.length} packages.`;
+    if (takeoverTargets > 0) {
+        summaryText += ` 🚨 ${takeoverTargets} TAKEOVER TARGET${takeoverTargets > 1 ? 'S' : ''}!`;
+    } else if (privateCount > 0) {
+        summaryText += ` ${privateCount} private/internal.`;
+    }
+    summary.textContent = summaryText;
 
     packages.forEach(pkg => {
-        const sevClass = pkg.severity === 'HIGH' ? 'high' : 'info';
+        // Determine severity class
+        let sevClass = 'info';
+        if (pkg.severity === 'CRITICAL') sevClass = 'critical';
+        else if (pkg.severity === 'HIGH') sevClass = 'high';
+        else if (pkg.severity === 'MEDIUM') sevClass = 'medium';
+
+        // Build display text
         let text = `${pkg.name} (${pkg.fileCount} files)`;
+
         if (pkg.isPublic) {
             text += `\n📦 Public: v${pkg.latestVersion}`;
+            if (pkg.description) text += `\n${pkg.description}`;
         } else if (pkg.isPublic === false) {
-            text += `\n🚨 PRIVATE / INTERNAL PACKAGE`;
-            text += `\n⚠️ Potential Dependency Confusion target!`;
+            text += `\n${pkg.verdict}`;
+            if (pkg.isTakeoverTarget) {
+                text += `\n💀 Register now: npmjs.com/package/${pkg.name}`;
+            }
         } else {
-            text += `\n❓ Status: ${pkg.error || 'Unknown'}`;
+            text += `\n${pkg.verdict || pkg.error || 'Unknown status'}`;
         }
 
         const li = createListItem(text, sevClass);
-        if (pkg.severity === 'HIGH') {
+
+        // Add severity tag
+        if (pkg.severity === 'CRITICAL') {
+            li.appendChild(createSevTag('CRITICAL'));
+        } else if (pkg.severity === 'HIGH') {
             li.appendChild(createSevTag('HIGH'));
         } else if (pkg.isPublic) {
             const tag = document.createElement('span');
@@ -733,12 +761,27 @@ function renderNpmPackages(data) {
             li.appendChild(tag);
         }
 
-        if (pkg.npmUrl) {
+        // Clickable link - different behavior for takeover targets vs public packages
+        if (pkg.isTakeoverTarget && pkg.takeoverUrl) {
+            li.style.cursor = 'pointer';
+            li.title = 'Click to check/register this package on npm';
+            li.onclick = (e) => {
+                e.stopPropagation();
+                window.open(pkg.takeoverUrl, '_blank');
+            };
+        } else if (pkg.npmUrl) {
             li.style.cursor = 'pointer';
             li.title = 'Click to view on npmjs.com';
             li.onclick = (e) => {
                 e.stopPropagation();
                 window.open(pkg.npmUrl, '_blank');
+            };
+        } else if (pkg.takeoverUrl) {
+            li.style.cursor = 'pointer';
+            li.title = 'Click to check scope on npm';
+            li.onclick = (e) => {
+                e.stopPropagation();
+                window.open(pkg.takeoverUrl, '_blank');
             };
         }
 
@@ -888,10 +931,10 @@ function renderSourceMaps(data) {
                         unpackBtn.textContent = '✓ Unpacked';
                         // AUTO ACTION: Trigger NPM analysis after successful unpack
                         // Use packages returned directly from background for speed and reliability
-                        setTimeout(() => {
-                            const pkgs = (response && response.packages) ? response.packages : null;
+                        const pkgs = (response && response.packages) ? response.packages : null;
+                        if (pkgs && pkgs.length > 0) {
                             triggerNpmAnalysis(pkgs);
-                        }, 500);
+                        }
                     }
                     setTimeout(() => unpackBtn.textContent = '📦 Unpack ZIP', 2000);
                 });

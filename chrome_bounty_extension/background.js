@@ -480,7 +480,7 @@ async function unpackSourceMap(url, hostname) {
             packageMap[pkgName].fileCount++;
         }
     });
-    const extractedPackages = Object.values(packageMap);
+    const extractedPackages = Object.values(packageMap).sort((a, b) => b.fileCount - a.fileCount);
 
     const zipData = zip.toUint8Array();
     const blob = new Blob([zipData], { type: 'application/zip' });
@@ -526,14 +526,22 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         sendResponse({ status: 'download_started' });
     } else if (request.action === 'unpackSourceMap' && request.url) {
         unpackSourceMap(request.url, request.hostname)
-            .then(() => sendResponse({ status: 'unpack_started' }))
+            .then(result => sendResponse({
+                status: 'unpack_complete',
+                downloadId: result.downloadId,
+                fileCount: result.fileCount,
+                packages: result.packages
+            }))
             .catch(err => sendResponse({ status: 'error', message: err.message }));
         return true; // Keep channel open for async response
     } else if (request.action === 'checkNpmPackages' && request.packages) {
-        // Check packages against npm registry
+        // Check packages against npm registry for Dependency Confusion / Private Package Takeover
         (async () => {
             const results = [];
             const packages = request.packages.slice(0, 100); // Limit to 100 packages
+
+            // Common internal package name patterns
+            const internalPatterns = /^(internal|private|corp|company|enterprise|infra|platform|core|shared|common|utils|helpers|lib|sdk|api|service|app|web|mobile|admin|portal|dashboard|config|build|deploy|ci|cd|test|mock|stub|fixture|seed|migration|script|tool|cli|pkg|module|component|widget|ui|ux|design|style|theme|asset|resource|vendor|third-party|legacy|deprecated|old|new|temp|tmp|dev|prod|stage|staging|qa|uat|local|docker|k8s|kubernetes|aws|azure|gcp|cloud)/i;
 
             for (const pkg of packages) {
                 try {
@@ -544,6 +552,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
                     });
 
                     if (resp.ok) {
+                        // Package exists on public npm
                         const data = await resp.json();
                         const latestVersion = data['dist-tags'] ? data['dist-tags'].latest : 'unknown';
                         results.push({
@@ -551,22 +560,50 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
                             fileCount: pkg.fileCount,
                             isScoped: pkg.isScoped,
                             isPublic: true,
+                            isTakeoverTarget: false,
                             npmUrl: `https://www.npmjs.com/package/${pkg.name}`,
                             description: (data.description || '').substring(0, 100),
                             latestVersion,
-                            severity: 'OK'
+                            severity: 'OK',
+                            verdict: 'Public package'
                         });
                     } else if (resp.status === 404) {
-                        // Package NOT on public npm — potential dependency confusion!
+                        // Package NOT on public npm — analyze takeover risk
+                        const isScoped = pkg.isScoped || pkg.name.startsWith('@');
+                        const pkgNameOnly = isScoped ? pkg.name.split('/')[1] : pkg.name;
+                        const looksInternal = internalPatterns.test(pkgNameOnly);
+
+                        // CRITICAL: Unscoped packages can be registered by ANYONE
+                        // HIGH: Scoped packages need scope ownership but still notable
+                        let severity = 'HIGH';
+                        let verdict = '';
+                        let takeoverUrl = null;
+
+                        if (!isScoped) {
+                            // CRITICAL - Anyone can register this on npm right now!
+                            severity = 'CRITICAL';
+                            verdict = '🚨 TAKEOVER POSSIBLE — Unscoped private package, anyone can claim on npm!';
+                            takeoverUrl = `https://www.npmjs.com/package/${pkg.name}`;
+                        } else {
+                            // Scoped package - need to own the scope
+                            const scope = pkg.name.split('/')[0];
+                            verdict = `⚠️ Private scoped package (${scope}) — Check if scope is claimed`;
+                            takeoverUrl = `https://www.npmjs.com/org/${scope.replace('@', '')}`;
+                        }
+
                         results.push({
                             name: pkg.name,
                             fileCount: pkg.fileCount,
-                            isScoped: pkg.isScoped,
+                            isScoped: isScoped,
                             isPublic: false,
+                            isTakeoverTarget: !isScoped, // Unscoped = immediate target
+                            looksInternal: looksInternal,
                             npmUrl: null,
+                            takeoverUrl: takeoverUrl,
                             description: null,
                             latestVersion: null,
-                            severity: 'HIGH'
+                            severity: severity,
+                            verdict: verdict
                         });
                     } else {
                         results.push({
@@ -574,7 +611,9 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
                             fileCount: pkg.fileCount,
                             isScoped: pkg.isScoped,
                             isPublic: null,
+                            isTakeoverTarget: false,
                             severity: 'UNKNOWN',
+                            verdict: `Check failed: HTTP ${resp.status}`,
                             error: `HTTP ${resp.status}`
                         });
                     }
@@ -584,11 +623,19 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
                         fileCount: pkg.fileCount,
                         isScoped: pkg.isScoped,
                         isPublic: null,
+                        isTakeoverTarget: false,
                         severity: 'UNKNOWN',
+                        verdict: `Check failed: ${e.message}`,
                         error: e.message
                     });
                 }
             }
+
+            // Sort: CRITICAL first, then HIGH, then rest
+            results.sort((a, b) => {
+                const order = { 'CRITICAL': 0, 'HIGH': 1, 'MEDIUM': 2, 'UNKNOWN': 3, 'OK': 4 };
+                return (order[a.severity] || 5) - (order[b.severity] || 5);
+            });
 
             sendResponse({ status: 'done', results });
         })();
