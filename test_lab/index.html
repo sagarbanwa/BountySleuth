@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <title>BountySleuth Test Lab Launcher</title>
+    <style>
+        body {
+            font-family: sans-serif;
+            max-width: 600px;
+            margin: 60px auto;
+            text-align: center;
+            background: #0d1117;
+            color: #e6edf3;
+        }
+
+        .box {
+            background: #161b22;
+            padding: 30px;
+            border-radius: 12px;
+            border: 1px solid #30363d;
+            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
+        }
+
+        h1 {
+            margin-bottom: 30px;
+        }
+
+        .btn {
+            display: block;
+            margin: 15px auto;
+            padding: 12px;
+            width: 80%;
+            background: #1f6feb;
+            color: white;
+            text-decoration: none;
+            border-radius: 6px;
+            font-weight: 600;
+            transition: background 0.2s;
+        }
+
+        .btn:hover {
+            background: #388bfd;
+        }
+
+        .btn.secondary {
+            background: #21262d;
+            border: 1px solid #30363d;
+        }
+
+        .btn.secondary:hover {
+            background: #30363d;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="box">
+        <h1>🔍 BountySleuth Test Lab</h1>
+        <p>Select a scenario to test v3.5 features:</p>
+
+        <a href="csrf_test.html" class="btn">🛡️ Test CSRF Detection</a>
+        <a href="sourcemap_test.html" class="btn">📦 Test NPM / Source Maps</a>
+
+        <hr style="border: 0; border-top: 1px solid #30363d; margin: 30px 0;">
+        <p><small>Load the unpacked <code>chrome_bounty_extension</code> folder in Developer Mode to begin.</small></p>
+    </div>
+</body>
+
+</html>

@@ -1,0 +1,23 @@
+{
+    "version": 3,
+    "file": "app.js",
+    "sourceRoot": "",
+    "sources": [
+        "webpack:///node_modules/react/index.js",
+        "webpack:///node_modules/lodash/lodash.js",
+        "webpack:///node_modules/@secuirty0x0/internal-auth-lib/src/auth.ts",
+        "webpack:///node_modules/custom-private-builder/index.js",
+        "webpack:///src/app.ts",
+        "webpack:///src/components/Login.tsx"
+    ],
+    "names": [],
+    "mappings": "AAAA,OAAOA,KAAK,MAAM,OAAO;...",
+    "sourcesContent": [
+        "// React source",
+        "// Lodash source",
+        "export const login = (user, pass) => { console.log('Internal Auth'); };",
+        "module.exports = { build: () => 'internal build' };",
+        "import { login } from './auth'; console.log('App started');",
+        "export const LoginComponent = () => <div>Login</div>;"
+    ]
+}

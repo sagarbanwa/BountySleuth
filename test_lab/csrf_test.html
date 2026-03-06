@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <title>BountySleuth CSRF Test Lab</title>
+    <style>
+        body {
+            font-family: sans-serif;
+            max-width: 800px;
+            margin: 40px auto;
+            line-height: 1.6;
+            background: #f4f4f9;
+        }
+
+        .case {
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+            border: 1px solid #ddd;
+        }
+
+        h1 {
+            color: #333;
+        }
+
+        h2 {
+            color: #d32f2f;
+            margin-top: 0;
+        }
+
+        .label {
+            font-weight: bold;
+            color: #555;
+        }
+
+        input[type="text"],
+        input[type="password"] {
+            width: 100%;
+            padding: 8px;
+            margin: 8px 0;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+        }
+
+        button {
+            background: #1976d2;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+
+        button:hover {
+            background: #1565c0;
+        }
+    </style>
+</head>
+
+<body>
+    <h1>🛡️ BountySleuth CSRF Test Lab</h1>
+    <p>Use the BountySleuth extension on this page to verify CSRF detection logic.</p>
+
+    <!-- Case 1: Missing CSRF Token on Sensitive Action -->
+    <div class="case">
+        <h2>🔥 Case 1: Missing Token (Critical/High)</h2>
+        <p class="label">Action: Change Password (Sensitive)</p>
+        <form action="/api/user/change-password" method="POST">
+            <input type="password" name="new_password" placeholder="Enter New Password">
+            <button type="submit">Update Password</button>
+        </form>
+        <p><small>BountySleuth should flag this as <b>CRITICAL</b> or <b>HIGH</b> because it's a sensitive action
+                missing a token.</small></p>
+    </div>
+
+    <!-- Case 2: Weak/Predictable CSRF Token -->
+    <div class="case">
+        <h2>⚠️ Case 2: Weak Token (Medium/High)</h2>
+        <p class="label">Action: Update Profile</p>
+        <form action="/profile/update" method="POST">
+            <input type="hidden" name="csrf_token" value="12345">
+            <input type="text" name="display_name" placeholder="Display Name">
+            <button type="submit">Save Changes</button>
+        </form>
+        <p><small>BountySleuth should flag this because the token <code>12345</code> is too short and numeric
+                only.</small></p>
+    </div>
+
+    <!-- Case 3: Sensitive Action via GET -->
+    <div class="case">
+        <h2>⛔ Case 3: Sensitive GET Action (High)</h2>
+        <p class="label">Action: Delete Account</p>
+        <a href="/settings/delete-account?confirm=true">
+            <button type="button" style="background: #c62828;">Delete My Account</button>
+        </a>
+        <p><small>BountySleuth should detect this sensitive keyword in a link or GET action.</small></p>
+    </div>
+
+    <!-- Case 4: Static Token across forms (Entropy Check) -->
+    <div class="case">
+        <h2>🔄 Case 4: Static/Low Entropy Token</h2>
+        <form action="/form1" method="POST">
+            <input type="hidden" name="token" value="static_token_value">
+            <button type="submit">Submit 1</button>
+        </form>
+        <div style="margin-top: 10px;"></div>
+        <form action="/form2" method="POST">
+            <input type="hidden" name="token" value="static_token_value">
+            <button type="submit">Submit 2</button>
+        </form>
+        <p><small>BountySleuth should detect that the token is exactly the same across different forms.</small></p>
+    </div>
+
+</body>
+
+</html>

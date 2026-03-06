@@ -73,70 +73,89 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // Analyze NPM Packages
     document.getElementById('analyzePackagesBtn').addEventListener('click', () => {
-        const btn = document.getElementById('analyzePackagesBtn');
-        const originalText = btn.textContent;
+        triggerNpmAnalysis();
+    });
+});
+
+/**
+ * Triggers the NPM package analysis for the current host.
+ * Refactored into a standalone function to allow auto-triggering after ZIP unpacking.
+ */
+function triggerNpmAnalysis() {
+    const btn = document.getElementById('analyzePackagesBtn');
+    const originalText = btn ? btn.textContent : '📦 Analyze NPM Packages';
+    if (btn) {
         btn.textContent = '⏳ Analyzing...';
         btn.disabled = true;
+    }
 
-        chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-            const url = new URL(tabs[0].url);
-            const host = url.hostname;
-            chrome.storage.local.get([host], (result) => {
-                const data = result[host] || {};
-                const maps = data.sourcemaps || [];
-                const allPackages = [];
+    chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+        if (!tabs[0]) return;
+        const url = new URL(tabs[0].url);
+        const host = url.hostname;
+        chrome.storage.local.get([host], (result) => {
+            const data = result[host] || {};
+            const maps = data.sourcemaps || [];
+            const allPackages = [];
 
-                maps.forEach(m => {
-                    if (m.analysis && m.analysis.packages) {
-                        m.analysis.packages.forEach(p => {
-                            if (!allPackages.some(ap => ap.name === p.name)) {
-                                allPackages.push(p);
-                            }
-                        });
-                    }
-                });
+            maps.forEach(m => {
+                if (m.analysis && m.analysis.packages) {
+                    m.analysis.packages.forEach(p => {
+                        if (!allPackages.some(ap => ap.name === p.name)) {
+                            allPackages.push(p);
+                        }
+                    });
+                }
+            });
 
-                if (allPackages.length === 0) {
+            if (allPackages.length === 0) {
+                if (btn) {
                     btn.textContent = '📦 No packages found';
                     setTimeout(() => {
                         btn.textContent = originalText;
                         btn.disabled = false;
                     }, 2000);
-                    return;
                 }
+                return;
+            }
 
-                chrome.runtime.sendMessage({ action: 'checkNpmPackages', packages: allPackages }, (response) => {
-                    if (response && response.status === 'done') {
-                        data.npm_analysis = response.results;
-                        const updateObj = {};
-                        updateObj[host] = data;
-                        chrome.storage.local.set(updateObj, () => {
-                            renderNpmPackages(data);
-                            btn.textContent = '📦 Analysis Complete';
-                            // Automatically open the NPM section
-                            const npmHeader = document.querySelector('[data-target="npmContent"]');
-                            const npmContent = document.getElementById('npmContent');
-                            if (npmContent.classList.contains('hidden')) {
-                                npmContent.classList.remove('hidden');
-                                npmHeader.classList.add('open');
-                            }
+            chrome.runtime.sendMessage({ action: 'checkNpmPackages', packages: allPackages }, (response) => {
+                if (response && response.status === 'done') {
+                    data.npm_analysis = response.results;
+                    const updateObj = {};
+                    updateObj[host] = data;
+                    chrome.storage.local.set(updateObj, () => {
+                        renderNpmPackages(data);
+                        if (btn) btn.textContent = '📦 Analysis Complete';
+
+                        // Automatically open the NPM section
+                        const npmHeader = document.querySelector('[data-target="npmContent"]');
+                        const npmContent = document.getElementById('npmContent');
+                        if (npmContent && npmContent.classList.contains('hidden')) {
+                            npmContent.classList.remove('hidden');
+                            if (npmHeader) npmHeader.classList.add('open');
+                        }
+
+                        if (btn) {
                             setTimeout(() => {
                                 btn.textContent = originalText;
                                 btn.disabled = false;
                             }, 2000);
-                        });
-                    } else {
+                        }
+                    });
+                } else {
+                    if (btn) {
                         btn.textContent = '❌ Error';
                         setTimeout(() => {
                             btn.textContent = originalText;
                             btn.disabled = false;
                         }, 2000);
                     }
-                });
+                }
             });
         });
     });
-});
+}
 
 function loadData(host) {
     chrome.storage.local.get([host], (result) => {
@@ -864,6 +883,10 @@ function renderSourceMaps(data) {
                         console.error("Unpack error:", response.message);
                     } else {
                         unpackBtn.textContent = '✓ Unpacked';
+                        // AUTO ACTION: Trigger NPM analysis after successful unpack
+                        setTimeout(() => {
+                            triggerNpmAnalysis();
+                        }, 500);
                     }
                     setTimeout(() => unpackBtn.textContent = '📦 Unpack ZIP', 2000);
                 });
