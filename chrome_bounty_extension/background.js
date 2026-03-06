@@ -464,9 +464,23 @@ async function unpackSourceMap(url, hostname) {
 
     console.log('[BountySleuth] Added', addedCount, 'source files to ZIP');
 
-    if (addedCount === 0) {
-        throw new Error('No source files with content found in the map');
-    }
+    // Extract packages for the NPM analyzer
+    const packageMap = {};
+    map.sources.forEach(s => {
+        const normalized = s
+            .replace(/^webpack:\/\/\//i, '')
+            .replace(/^webpack:\/\/[^/]*\//i, '')
+            .replace(/^\.\//g, '');
+        const nmMatch = normalized.match(/node_modules\/((?:@[^/]+\/)?[^/]+)/);
+        if (nmMatch) {
+            const pkgName = nmMatch[1];
+            if (!packageMap[pkgName]) {
+                packageMap[pkgName] = { name: pkgName, fileCount: 0, isScoped: pkgName.startsWith('@') };
+            }
+            packageMap[pkgName].fileCount++;
+        }
+    });
+    const extractedPackages = Object.values(packageMap);
 
     const zipData = zip.toUint8Array();
     const blob = new Blob([zipData], { type: 'application/zip' });
@@ -487,7 +501,7 @@ async function unpackSourceMap(url, hostname) {
                 reject(new Error(chrome.runtime.lastError.message));
             } else {
                 console.log('[BountySleuth] Download started, ID:', downloadId);
-                resolve({ downloadId, fileCount: addedCount });
+                resolve({ downloadId, fileCount: addedCount, packages: extractedPackages });
             }
         });
     });

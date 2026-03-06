@@ -80,8 +80,9 @@ document.addEventListener('DOMContentLoaded', () => {
 /**
  * Triggers the NPM package analysis for the current host.
  * Refactored into a standalone function to allow auto-triggering after ZIP unpacking.
+ * @param {Array} manualPackages - Optional pre-extracted packages from background.
  */
-function triggerNpmAnalysis() {
+function triggerNpmAnalysis(manualPackages = null) {
     const btn = document.getElementById('analyzePackagesBtn');
     const originalText = btn ? btn.textContent : '📦 Analyze NPM Packages';
     if (btn) {
@@ -96,17 +97,19 @@ function triggerNpmAnalysis() {
         chrome.storage.local.get([host], (result) => {
             const data = result[host] || {};
             const maps = data.sourcemaps || [];
-            const allPackages = [];
+            let allPackages = manualPackages || [];
 
-            maps.forEach(m => {
-                if (m.analysis && m.analysis.packages) {
-                    m.analysis.packages.forEach(p => {
-                        if (!allPackages.some(ap => ap.name === p.name)) {
-                            allPackages.push(p);
-                        }
-                    });
-                }
-            });
+            if (!manualPackages) {
+                maps.forEach(m => {
+                    if (m.analysis && m.analysis.packages) {
+                        m.analysis.packages.forEach(p => {
+                            if (!allPackages.some(ap => ap.name === p.name)) {
+                                allPackages.push(p);
+                            }
+                        });
+                    }
+                });
+            }
 
             if (allPackages.length === 0) {
                 if (btn) {
@@ -884,8 +887,10 @@ function renderSourceMaps(data) {
                     } else {
                         unpackBtn.textContent = '✓ Unpacked';
                         // AUTO ACTION: Trigger NPM analysis after successful unpack
+                        // Use packages returned directly from background for speed and reliability
                         setTimeout(() => {
-                            triggerNpmAnalysis();
+                            const pkgs = (response && response.packages) ? response.packages : null;
+                            triggerNpmAnalysis(pkgs);
                         }, 500);
                     }
                     setTimeout(() => unpackBtn.textContent = '📦 Unpack ZIP', 2000);
