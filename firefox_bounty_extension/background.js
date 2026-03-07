@@ -309,7 +309,7 @@ function checkServerInfo(headerMap, analysis) {
     });
 }
 
-// ---- Cache Security Analysis (Enhanced v3.6) ----
+// ---- Cache Security Analysis (Enhanced v3.6.5 - Advanced Cache Deception) ----
 function checkCacheSecurity(headerMap, analysis, requestUrl, isMainFrame) {
     const cacheControl = (headerMap['cache-control'] || '').toLowerCase();
     const vary = (headerMap['vary'] || '').toLowerCase();
@@ -325,8 +325,40 @@ function checkCacheSecurity(headerMap, analysis, requestUrl, isMainFrame) {
     const sensitivePatterns = /\/(api|auth|login|logout|register|signup|password|reset|account|profile|admin|dashboard|checkout|payment|order|cart|session|token|user|me|private|internal|settings|billing|subscription|graphql|oauth|callback|webhook)/i;
     const isSensitiveUrl = sensitivePatterns.test(requestUrl);
 
-    // Web Cache Deception patterns (path confusion) - sensitive URL ending with static extension
-    const hasPathConfusion = /\/[^\/]+\.(css|js|jpg|jpeg|png|gif|ico|svg|woff|woff2|ttf|eot|pdf)$/i.test(requestUrl) && isSensitiveUrl;
+    // ===== ADVANCED WEB CACHE DECEPTION DETECTION =====
+    // Static extensions that CDNs typically cache
+    const staticExtensions = /\.(css|js|jpg|jpeg|png|gif|ico|svg|woff|woff2|ttf|eot|pdf|json|xml|html|mp4|webp|avif)$/i;
+
+    // Pattern 1: Basic - sensitive URL ending with static extension
+    const hasBasicPathConfusion = staticExtensions.test(requestUrl) && isSensitiveUrl;
+
+    // Pattern 2: Delimiter-based confusion (~/;/:/#/!/etc before extension)
+    // e.g., /account~style.css, /profile;v2.js, /dashboard#section.css
+    const delimiterPattern = /\/(api|auth|account|profile|admin|dashboard|user|settings|me|private)[~;:#!@$&_\\]+[^\/]*\.(css|js|jpg|png|gif|svg|json|xml|ico)/i;
+    const hasDelimiterConfusion = delimiterPattern.test(requestUrl);
+
+    // Pattern 3: Encoded path confusion (%2e%2e, %2f, %5c)
+    // e.g., /settings/%2e%2e/images/logo.png
+    const encodedPattern = /(%2e%2e|%2f|%5c|%252e|%252f)/i;
+    const hasEncodedConfusion = encodedPattern.test(requestUrl) && isSensitiveUrl;
+
+    // Pattern 4: Double path with extension (path traversal to static)
+    // e.g., /account.php/poc.css, /profile/../../static.js
+    const doublePathPattern = /\/(api|auth|account|profile|admin|dashboard|user|settings)[^?]*\.(php|asp|aspx|jsp|do|action|cfm)[\/][^?]*\.(css|js|jpg|png|gif|ico)/i;
+    const hasDoublePathConfusion = doublePathPattern.test(requestUrl);
+
+    // Pattern 5: Query param with static extension trick
+    // e.g., /profile.js?test=123, /account.css?v=1
+    const queryExtPattern = /\/(api|auth|account|profile|admin|dashboard|user|settings|me)[^\/]*\.(css|js|json|xml|jpg|png|gif|ico)\?/i;
+    const hasQueryExtConfusion = queryExtPattern.test(requestUrl);
+
+    // Pattern 6: Wildcard/path suffix patterns
+    // e.g., /account.js/*, /profile.css/anything
+    const wildcardPattern = /\.(css|js|json|xml|jpg|png|gif|ico)\/[^?]/i;
+    const hasWildcardConfusion = wildcardPattern.test(requestUrl) && isSensitiveUrl;
+
+    // Combine all path confusion checks
+    const hasPathConfusion = hasBasicPathConfusion || hasDelimiterConfusion || hasEncodedConfusion || hasDoublePathConfusion || hasQueryExtConfusion || hasWildcardConfusion;
 
     // Parse cache-control directives
     const isPublic = cacheControl.includes('public');
@@ -423,15 +455,35 @@ function checkCacheSecurity(headerMap, analysis, requestUrl, isMainFrame) {
         });
     }
 
-    // Check 7: Web Cache Deception vulnerability pattern
+    // Check 7: Web Cache Deception vulnerability patterns (Advanced)
     if (hasPathConfusion && !isPrivate && !hasNoStore) {
+        let deceptionType = 'basic static extension';
+        let deceptionExample = '/profile.css';
+
+        if (hasDelimiterConfusion) {
+            deceptionType = 'delimiter-based confusion';
+            deceptionExample = '/account~style.css, /profile;v2.js';
+        } else if (hasEncodedConfusion) {
+            deceptionType = 'encoded path traversal';
+            deceptionExample = '/settings/%2e%2e/static.css';
+        } else if (hasDoublePathConfusion) {
+            deceptionType = 'double path confusion';
+            deceptionExample = '/account.php/poc.css';
+        } else if (hasQueryExtConfusion) {
+            deceptionType = 'query param with extension';
+            deceptionExample = '/profile.js?test=123';
+        } else if (hasWildcardConfusion) {
+            deceptionType = 'wildcard/suffix pattern';
+            deceptionExample = '/account.js/anything';
+        }
+
         issues.push({
             url: requestUrl,
             type: 'cache-deception',
             severity: 'HIGH',
-            verdict: '🚨 Potential Web Cache Deception — sensitive URL with static extension',
-            header: `URL ends with static extension on sensitive path`,
-            recommendation: 'Ensure Cache-Control: private, no-store on all authenticated responses regardless of URL extension'
+            verdict: `🚨 Web Cache Deception — ${deceptionType} detected!`,
+            header: `Pattern: ${deceptionExample}`,
+            recommendation: 'Ensure Cache-Control: private, no-store on all authenticated responses regardless of URL structure'
         });
     }
 
@@ -485,7 +537,11 @@ function checkCacheSecurity(headerMap, analysis, requestUrl, isMainFrame) {
 
     // Check 12: Cache Poisoning via Unkeyed Headers detection
     // Check if dangerous headers are present that could be used for poisoning
-    const poisonableHeaders = ['x-forwarded-host', 'x-original-url', 'x-rewrite-url', 'x-forwarded-scheme', 'x-forwarded-proto'];
+    const poisonableHeaders = [
+        'x-forwarded-host', 'x-original-url', 'x-rewrite-url',
+        'x-forwarded-scheme', 'x-forwarded-proto', 'x-forwarded-path',
+        'x-http-method-override', 'x-forwarded-prefix', 'x-amz-website-redirect-location'
+    ];
     const variedHeaders = vary.split(',').map(h => h.trim().toLowerCase());
 
     poisonableHeaders.forEach(header => {
