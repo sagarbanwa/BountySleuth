@@ -603,8 +603,11 @@ class SimpleZipWriter {
     addFile(path, content) {
         const encoder = new TextEncoder();
         const data = typeof content === 'string' ? encoder.encode(content) : new Uint8Array(content);
+        const normalizedPath = path.replace(/\\/g, '/').replace(/^\/+/, '');
+        const pathBytes = encoder.encode(normalizedPath); // Pre-encode to UTF-8 for correct byte length
         this.files.push({
-            path: path.replace(/\\/g, '/').replace(/^\/+/, ''),
+            path: normalizedPath,
+            pathBytes: pathBytes,
             data: data,
             time: new Date()
         });
@@ -618,9 +621,9 @@ class SimpleZipWriter {
     }
 
     toUint8Array() {
-        let totalSize = 0;
-        const centralDirSize = this.files.reduce((acc, f) => acc + 46 + f.path.length, 0);
-        const fileDataSize = this.files.reduce((acc, f) => acc + 30 + f.path.length + f.data.length, 0);
+        // Use pre-encoded pathBytes.length for correct UTF-8 byte sizing
+        const centralDirSize = this.files.reduce((acc, f) => acc + 46 + f.pathBytes.length, 0);
+        const fileDataSize = this.files.reduce((acc, f) => acc + 30 + f.pathBytes.length + f.data.length, 0);
         const buffer = new Uint8Array(fileDataSize + centralDirSize + 22);
         let offset = 0;
 
@@ -629,8 +632,7 @@ class SimpleZipWriter {
             buffer[offset++] = val & 0xFF; buffer[offset++] = (val >> 8) & 0xFF;
             buffer[offset++] = (val >> 16) & 0xFF; buffer[offset++] = (val >> 24) & 0xFF;
         };
-        const writeString = (str) => {
-            const bytes = new TextEncoder().encode(str);
+        const writeBytes = (bytes) => {
             buffer.set(bytes, offset);
             offset += bytes.length;
         };
@@ -648,9 +650,9 @@ class SimpleZipWriter {
             writeUint32(this._crc32(f.data));
             writeUint32(f.data.length); // Compressed size
             writeUint32(f.data.length); // Uncompressed size
-            writeUint16(f.path.length);
+            writeUint16(f.pathBytes.length); // Use UTF-8 byte length
             writeUint16(0); // Extra field len
-            writeString(f.path);
+            writeBytes(f.pathBytes); // Write pre-encoded path bytes
             buffer.set(f.data, offset);
             offset += f.data.length;
         }
@@ -669,14 +671,14 @@ class SimpleZipWriter {
             writeUint32(this._crc32(f.data));
             writeUint32(f.data.length);
             writeUint32(f.data.length);
-            writeUint16(f.path.length);
+            writeUint16(f.pathBytes.length); // Use UTF-8 byte length
             writeUint16(0); // Extra
             writeUint16(0); // Comment
             writeUint16(0); // Disk
             writeUint16(0); // Internal attr
             writeUint32(0); // External attr
             writeUint32(fileOffsets[i]); // Local header offset
-            writeString(f.path);
+            writeBytes(f.pathBytes); // Write pre-encoded path bytes
         }
 
         const endOfCentralDirOffset = offset;
