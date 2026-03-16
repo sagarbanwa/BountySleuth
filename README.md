@@ -15,6 +15,7 @@ BountySleuth performs real-time analysis across multiple attack vectors:
 * **📡 WAF & Server Fingerprint**: Detects Web Application Firewalls (Cloudflare, Akamai, Sucuri, AWS, etc.) and server technologies.
 * **🔒 Security Headers**: Analyzes headers for misconfigurations (missing CSP, HSTS, X-Frame-Options, etc.).
 * **🌐 CORS Misconfiguration**: Checks for wildcard origins and credentials allowed, identifying potential cross-origin data leaks.
+* **💉 Host Header Injection**: Automatically analyzes requests for Host Header vulnerabilities by injecting common payloads and monitoring responses.
 * **🛡️ CSRF Analysis**: Detects forms without proper CSRF protection, analyzing tokens in hidden inputs, meta tags, and global variables. Includes weak token detection and static token analysis.
 * **💉 XSS / HTMLi Analysis**: Evaluates and highlights input fields based on constraints (maxlength, patterns) and detects real-time reflections in the DOM.
 * **⚡ DOM Sinks**: Scans inline scripts for dangerous sinks (`innerHTML`, `eval`, `document.write`) interacting with user-controllable sources.
@@ -68,6 +69,9 @@ BountySleuth performs real-time analysis across multiple attack vectors:
 
 BountySleuth detects vulnerabilities that can lead to real bug bounty payouts. Here are resources to learn more:
 
+### Host Header Injection
+- [PortSwigger Host Header Injection Labs](https://portswigger.net/web-security/host-header) — Free interactive labs
+
 ### Cache Poisoning & Cache Deception
 - [PortSwigger Web Cache Poisoning Labs](https://portswigger.net/web-security/web-cache-poisoning) — Free interactive labs
 - [PortSwigger Web Cache Deception Labs](https://portswigger.net/web-security/web-cache-deception) — Hands-on practice
@@ -98,6 +102,10 @@ Pre-compiled files for both Google Chrome and Mozilla Firefox are available in t
 🐦 Twitter: [x.com/sagarbanwa](https://x.com/sagarbanwa)
 
 ## 📝 Changelog
+
+### v3.6.6 — Host Header Injection & Source Map Fixes
+- ✨ **New: Host Header Injection** — Automatically analyzes requests for Host Header vulnerabilities by injecting common payloads and monitoring responses.
+- 🐛 **Fix: Enhanced Source Map Unpacker** — Fixed compatibility issues with Chrome-based source maps, ensuring more robust one-click ZIP downloads of frontend directory structures.
 
 ### v3.6.5 — Advanced Web Cache Deception Detection
 - ✨ **Enhanced: Web Cache Deception** — Now detects 6 advanced attack patterns:
