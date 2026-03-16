@@ -712,7 +712,11 @@ class SimpleZipWriter {
 async function unpackSourceMap(url, hostname) {
     console.log('[BountySleuth] Starting unpack for:', url);
 
-    const resp = await fetch(url);
+    // Include credentials for authenticated source maps
+    const resp = await fetch(url, {
+        credentials: 'include',
+        mode: 'cors'
+    });
     if (!resp.ok) throw new Error(`Failed to fetch source map: HTTP ${resp.status}`);
 
     const text = await resp.text();
@@ -805,19 +809,21 @@ async function unpackSourceMap(url, hostname) {
     const extractedPackages = Object.values(packageMap).sort((a, b) => b.fileCount - a.fileCount);
 
     const zipData = zip.toUint8Array();
-    const blob = new Blob([zipData], { type: 'application/zip' });
-    const blobUrl = URL.createObjectURL(blob);
+    console.log('[BountySleuth] ZIP created, size:', zipData.length, 'bytes');
+
+    // Convert to base64 data URL (more reliable in MV3 service workers than blob URLs)
+    const base64 = uint8ArrayToBase64(zipData);
+    const dataUrl = `data:application/zip;base64,${base64}`;
     const baseName = hostname || mapFileName.replace('.js.map', '').replace('.css.map', '').replace('.map', '');
+
+    console.log('[BountySleuth] Starting download for:', baseName);
 
     return new Promise((resolve, reject) => {
         chrome.downloads.download({
-            url: blobUrl,
+            url: dataUrl,
             filename: `BountySleuth_Unpacked/${baseName}_source_code.zip`,
             saveAs: false
         }, (downloadId) => {
-            // Clean up the blob URL after a delay
-            setTimeout(() => URL.revokeObjectURL(blobUrl), 60000);
-
             if (chrome.runtime.lastError) {
                 console.error('[BountySleuth] Download error:', chrome.runtime.lastError);
                 reject(new Error(chrome.runtime.lastError.message));
@@ -829,23 +835,63 @@ async function unpackSourceMap(url, hostname) {
     });
 }
 
+// Helper function to convert Uint8Array to base64
+function uint8ArrayToBase64(uint8Array) {
+    let binary = '';
+    const chunkSize = 8192;
+    for (let i = 0; i < uint8Array.length; i += chunkSize) {
+        const chunk = uint8Array.subarray(i, Math.min(i + chunkSize, uint8Array.length));
+        binary += String.fromCharCode.apply(null, chunk);
+    }
+    return btoa(binary);
+}
+
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     if (request.action === 'downloadSourceMap' && request.url) {
-        try {
-            const filename = request.url.split('/').pop().split('?')[0] || 'sourcemap.map';
-            chrome.downloads.download({
-                url: request.url,
-                filename: `BountySleuth_SourceMaps/${filename}`,
-                saveAs: false
-            }, (downloadId) => {
-                if (chrome.runtime.lastError) {
-                    console.error('BountySleuth download error:', chrome.runtime.lastError);
+        // Fetch content first, then download via data URL (fixes CORS/MV3 issues)
+        (async () => {
+            try {
+                const filename = request.url.split('/').pop().split('?')[0] || 'sourcemap.map';
+                console.log('[BountySleuth] Downloading source map:', request.url);
+
+                // Include credentials for authenticated source maps
+                const response = await fetch(request.url, {
+                    credentials: 'include',
+                    mode: 'cors'
+                });
+                if (!response.ok) {
+                    console.error('[BountySleuth] Download error: HTTP', response.status);
+                    sendResponse({ status: 'error', message: `HTTP ${response.status}` });
+                    return;
                 }
-            });
-        } catch (e) {
-            console.error('BountySleuth download error:', e);
-        }
-        sendResponse({ status: 'download_started' });
+
+                // Convert to base64 data URL (more reliable in MV3 service workers)
+                const arrayBuffer = await response.arrayBuffer();
+                const uint8Array = new Uint8Array(arrayBuffer);
+                const base64 = uint8ArrayToBase64(uint8Array);
+                const dataUrl = `data:application/json;base64,${base64}`;
+
+                console.log('[BountySleuth] Fetched, size:', uint8Array.length, 'bytes');
+
+                chrome.downloads.download({
+                    url: dataUrl,
+                    filename: `BountySleuth_SourceMaps/${filename}`,
+                    saveAs: false
+                }, (downloadId) => {
+                    if (chrome.runtime.lastError) {
+                        console.error('[BountySleuth] Download error:', chrome.runtime.lastError);
+                        sendResponse({ status: 'error', message: chrome.runtime.lastError.message });
+                    } else {
+                        console.log('[BountySleuth] Download started, ID:', downloadId);
+                        sendResponse({ status: 'download_started', downloadId });
+                    }
+                });
+            } catch (e) {
+                console.error('[BountySleuth] Download error:', e);
+                sendResponse({ status: 'error', message: e.message });
+            }
+        })();
+        return true; // Keep channel open for async response
     } else if (request.action === 'unpackSourceMap' && request.url) {
         unpackSourceMap(request.url, request.hostname)
             .then(result => sendResponse({

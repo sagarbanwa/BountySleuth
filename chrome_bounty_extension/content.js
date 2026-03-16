@@ -332,7 +332,8 @@ async function scanPage() {
         js_files: new Set(),
         js_protections: [],
         sourcemaps: [],
-        sri_issues: [] // Subresource Integrity issues
+        sri_issues: [], // Subresource Integrity issues
+        host_header: [] // Host Header Injection findings
     };
 
     // =============================================
@@ -392,12 +393,17 @@ async function scanPage() {
     scanSRI(findings);
 
     // =============================================
-    // 12. SAVE ALL FINDINGS
+    // 12. HOST HEADER INJECTION DETECTION
+    // =============================================
+    scanHostHeaderInjection(findings);
+
+    // =============================================
+    // 13. SAVE ALL FINDINGS
     // =============================================
     saveFindings(findings);
 }
 
-// ---- CSRF Scanner (Enhanced v3.4) ----
+// ---- CSRF Scanner (Enhanced v3.6.5 - Advanced Token Analysis) ----
 function scanCSRF(findings) {
     const forms = document.querySelectorAll('form');
 
@@ -419,12 +425,13 @@ function scanCSRF(findings) {
         });
     } catch (e) { /* safe to continue */ }
 
-    // Check SameSite cookie protection
-    let hasSameSiteCookie = false;
+    // Collect cookie values for Double Submit Cookie detection
+    const cookieValues = [];
     try {
-        const cookies = document.cookie.split(';');
-        // We can't directly read SameSite from JS, but we can note cookie presence
-        hasSameSiteCookie = false; // Can't reliably detect SameSite from JS
+        document.cookie.split(';').forEach(c => {
+            const val = (c.split('=')[1] || '').trim();
+            if (val.length >= 10) cookieValues.push(val);
+        });
     } catch (e) { /* ignore */ }
 
     // Collect all token values to detect static/duplicate tokens
@@ -512,6 +519,7 @@ function scanCSRF(findings) {
             if (tokenValue && tokenValue !== '(dynamic)') {
                 allTokenValues.push(tokenValue);
 
+                // === BASIC CHECKS ===
                 // Check token length (short tokens are weak)
                 if (tokenValue.length < 16) {
                     tokenIssues.push(`Too short (${tokenValue.length} chars, need ≥16)`);
@@ -542,6 +550,76 @@ function scanCSRF(findings) {
                 const uniqueChars = new Set(tokenValue.split('')).size;
                 if (tokenValue.length > 10 && uniqueChars < 5) {
                     tokenIssues.push(`Very low entropy (only ${uniqueChars} unique chars)`);
+                }
+
+                // === ADVANCED CHECKS (v3.6.5) ===
+
+                // 1. Shannon Entropy calculation for better randomness detection
+                const entropy = calculateShannonEntropy(tokenValue);
+                if (entropy < 3.0 && tokenValue.length >= 16) {
+                    tokenIssues.push(`Low Shannon entropy (${entropy.toFixed(2)} bits) — weak randomness`);
+                }
+
+                // 2. MD5/SHA hash pattern detection (32/40/64 hex chars)
+                if (/^[a-f0-9]{32}$/i.test(tokenValue)) {
+                    tokenIssues.push('Appears to be MD5 hash — check if predictable input');
+                }
+                if (/^[a-f0-9]{40}$/i.test(tokenValue)) {
+                    tokenIssues.push('Appears to be SHA-1 hash — check if predictable input');
+                }
+                if (/^[a-f0-9]{64}$/i.test(tokenValue)) {
+                    tokenIssues.push('Appears to be SHA-256 hash — check if predictable input');
+                }
+
+                // 3. User ID / Session substring detection
+                const urlParams = new URLSearchParams(window.location.search);
+                const userId = urlParams.get('user_id') || urlParams.get('uid') || urlParams.get('id');
+                if (userId && tokenValue.includes(userId)) {
+                    tokenIssues.push('Token contains user ID — predictable per-user');
+                }
+
+                // 4. Sequential/Incremental token detection
+                if (/^[0-9a-f]+$/i.test(tokenValue)) {
+                    const numVal = parseInt(tokenValue, 16);
+                    if (!isNaN(numVal) && numVal > 0 && numVal < 1000000) {
+                        tokenIssues.push('Low numeric value — possibly sequential');
+                    }
+                }
+
+                // 5. Double Submit Cookie pattern detection
+                if (cookieValues.some(cv => cv === tokenValue || tokenValue.includes(cv) || cv.includes(tokenValue))) {
+                    tokenIssues.push('Token matches cookie value — Double Submit Cookie (check cookie attributes)');
+                }
+
+                // 6. Base64 decoded analysis
+                try {
+                    const decoded = atob(tokenValue);
+                    if (/^[0-9]+$/.test(decoded)) {
+                        tokenIssues.push('Base64 decodes to numeric — predictable');
+                    }
+                    if (/^(user|admin|guest|test)/i.test(decoded)) {
+                        tokenIssues.push('Base64 decodes to common string — predictable');
+                    }
+                    // Check if decoded is a timestamp
+                    if (/^1[0-9]{9,12}$/.test(decoded)) {
+                        tokenIssues.push('Base64 decodes to timestamp — predictable');
+                    }
+                } catch (e) { /* not base64 */ }
+
+                // 7. JWT detection (not a proper CSRF token)
+                if (/^eyJ[a-zA-Z0-9_-]+\.eyJ[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+$/.test(tokenValue)) {
+                    tokenIssues.push('JWT used as CSRF token — may be replayable across sessions');
+                }
+
+                // 8. Weak character set (only lowercase or only uppercase)
+                if (tokenValue.length >= 16 && /^[a-z]+$/.test(tokenValue)) {
+                    tokenIssues.push('Lowercase only — reduced keyspace');
+                }
+                if (tokenValue.length >= 16 && /^[A-Z]+$/.test(tokenValue)) {
+                    tokenIssues.push('Uppercase only — reduced keyspace');
+                }
+                if (tokenValue.length >= 16 && /^[a-zA-Z]+$/.test(tokenValue)) {
+                    tokenIssues.push('Letters only — no numbers/symbols, reduced keyspace');
                 }
             }
 
@@ -575,6 +653,70 @@ function scanCSRF(findings) {
                     sensitive: isSensitiveAction || hasSensitiveFields
                 });
             }
+        }
+
+        // === FORM-LEVEL VULNERABILITY CHECKS ===
+
+        // Check for token in URL (Referer leakage)
+        if (action.includes('csrf') || action.includes('token') || action.includes('_token')) {
+            const urlMatch = action.match(/[?&](csrf|token|_token|xsrf)[^&]*/i);
+            if (urlMatch) {
+                findings.csrf.push({
+                    action,
+                    method,
+                    formId,
+                    inputCount,
+                    severity: 'MEDIUM',
+                    verdict: '⚠️ CSRF Token in URL — Referer Leakage Risk',
+                    reason: 'Token in URL query parameter may leak via Referer header to external sites',
+                    note: 'Move token to POST body or custom header'
+                });
+            }
+        }
+
+        // Check for formaction/formmethod hijacking
+        const buttonsWithFormaction = form.querySelectorAll('button[formaction], input[formaction]');
+        if (buttonsWithFormaction.length > 0) {
+            findings.csrf.push({
+                action,
+                method,
+                formId,
+                inputCount,
+                severity: 'LOW',
+                verdict: '⚠️ Form has formaction override buttons',
+                reason: `${buttonsWithFormaction.length} button(s) can override form action — verify CSRF protection on all targets`,
+                note: 'Attacker-controlled formaction could bypass CSRF checks'
+            });
+        }
+
+        // Check for autocomplete on sensitive forms
+        const autocomplete = form.getAttribute('autocomplete');
+        if (hasSensitiveFields && autocomplete !== 'off') {
+            findings.csrf.push({
+                action,
+                method,
+                formId,
+                inputCount,
+                severity: 'INFO',
+                verdict: '💡 Sensitive form without autocomplete="off"',
+                reason: 'Sensitive data may be cached by browser autocomplete',
+                note: 'Consider adding autocomplete="off" for sensitive forms'
+            });
+        }
+
+        // Check for enctype that could enable JSON CSRF
+        const enctype = form.getAttribute('enctype');
+        if (enctype === 'text/plain') {
+            findings.csrf.push({
+                action,
+                method,
+                formId,
+                inputCount,
+                severity: 'MEDIUM',
+                verdict: '⚠️ Form uses text/plain enctype — JSON CSRF possible',
+                reason: 'text/plain enctype can be used to craft JSON payloads for CSRF attacks',
+                note: 'If endpoint accepts JSON, verify Content-Type validation server-side'
+            });
         }
     });
 
@@ -615,6 +757,56 @@ function scanCSRF(findings) {
             });
         }
     });
+
+    // Check for clickjacking protection (X-Frame-Options / CSP frame-ancestors)
+    checkClickjackingCSRF(findings);
+}
+
+// Shannon entropy calculation for token randomness analysis
+function calculateShannonEntropy(str) {
+    const freq = {};
+    for (const char of str) {
+        freq[char] = (freq[char] || 0) + 1;
+    }
+    let entropy = 0;
+    const len = str.length;
+    for (const char in freq) {
+        const p = freq[char] / len;
+        entropy -= p * Math.log2(p);
+    }
+    return entropy;
+}
+
+// Check for clickjacking which can enable CSRF-like attacks
+function checkClickjackingCSRF(findings) {
+    // Check if page can be framed (enables click-based CSRF)
+    const hasFrameProtection = document.querySelector('meta[http-equiv="X-Frame-Options"]');
+
+    // Check for frame-busting scripts
+    let hasFrameBuster = false;
+    try {
+        const scripts = document.querySelectorAll('script:not([src])');
+        scripts.forEach(s => {
+            if (/top\s*!==?\s*self|top\.location|parent\.frames/i.test(s.textContent)) {
+                hasFrameBuster = true;
+            }
+        });
+    } catch (e) { /* ignore */ }
+
+    // If no frame protection and sensitive forms exist
+    const sensitiveForms = document.querySelectorAll('form[action*="login"], form[action*="password"], form[action*="transfer"], form[action*="payment"], form[action*="delete"]');
+    if (!hasFrameProtection && !hasFrameBuster && sensitiveForms.length > 0) {
+        findings.csrf.push({
+            action: '(page-level)',
+            method: 'FRAME',
+            formId: 'clickjacking',
+            inputCount: sensitiveForms.length,
+            severity: 'MEDIUM',
+            verdict: '⚠️ Clickjacking possible — No frame protection detected',
+            reason: 'Page with sensitive forms can be framed, enabling click-based CSRF attacks',
+            note: 'Add X-Frame-Options or CSP frame-ancestors header'
+        });
+    }
 }
 
 // Intercept XHR/fetch to see if they carry CSRF headers
@@ -734,7 +926,7 @@ function scanXSS(findings) {
 }
 
 // Inject harmless canary strings into inputs for reflection testing
-function injectCanaries(findings) {
+function injectCanaries() {
     const inputs = document.querySelectorAll('input[type="text"], input[type="search"], textarea');
     const canaryMap = {};
 
@@ -785,8 +977,7 @@ function highlightInputs(findings) {
 // ---- JS Protection Scanner (v3.3) ----
 function scanJSProtections(findings) {
     try {
-        const scripts = document.querySelectorAll('script');
-        let htmlSource = document.documentElement.outerHTML.toLowerCase();
+        const htmlSource = document.documentElement.outerHTML.toLowerCase();
 
         if (htmlSource.includes('dompurify') || window.DOMPurify) {
             findings.js_protections.push('DOMPurify');
@@ -1369,6 +1560,247 @@ function scanSRI(findings) {
     });
 }
 
+// ---- Host Header Injection Scanner (v3.6.5) ----
+function scanHostHeaderInjection(findings) {
+    const currentHost = window.location.hostname;
+    const currentOrigin = window.location.origin;
+    const pathname = window.location.pathname.toLowerCase();
+
+    // Detect if this is a password reset or sensitive page
+    const isPasswordResetPage = /reset|forgot|recover|password|pwd|token|verify|confirm|activate|invitation/i.test(pathname) ||
+        /reset|forgot|recover|password/i.test(document.title) ||
+        document.querySelector('input[type="password"], input[name*="password"], input[name*="pwd"], input[placeholder*="password"]');
+
+    const isHomePage = pathname === '/' || pathname === '/index.html' || pathname === '/index.php' || pathname === '/home';
+
+    const isLoginPage = /login|signin|sign-in|auth|authenticate|sso/i.test(pathname) ||
+        document.querySelector('form[action*="login"], form[action*="signin"], form[action*="auth"]');
+
+    const isRegistrationPage = /register|signup|sign-up|create-account|join/i.test(pathname);
+
+    // Check various elements for Host Header Injection indicators
+
+    // 1. Check meta tags with absolute URLs
+    const metaTags = document.querySelectorAll('meta[property="og:url"], meta[name="canonical"], link[rel="canonical"], meta[property="og:image"]');
+    metaTags.forEach(tag => {
+        const content = tag.getAttribute('content') || tag.getAttribute('href');
+        if (content && content.includes(currentHost)) {
+            findings.host_header.push({
+                type: 'meta-tag',
+                element: tag.outerHTML.substring(0, 150),
+                url: content,
+                pageType: isPasswordResetPage ? 'Password Reset Page' : isHomePage ? 'Home Page' : 'Other',
+                severity: 'INFO',
+                verdict: '💡 Canonical/OG URL contains hostname — test for Host Header Injection',
+                reason: 'Meta tags with absolute URLs may reflect Host header value',
+                testPayload: `Host: evil.com\\r\\nX-Forwarded-Host: evil.com`,
+                note: 'Send request with modified Host header and check if URL changes'
+            });
+        }
+    });
+
+    // 2. Check base href tag
+    const baseTag = document.querySelector('base[href]');
+    if (baseTag) {
+        const baseHref = baseTag.getAttribute('href');
+        if (baseHref && (baseHref.includes(currentHost) || baseHref.startsWith('/'))) {
+            findings.host_header.push({
+                type: 'base-tag',
+                element: baseTag.outerHTML,
+                url: baseHref,
+                pageType: isPasswordResetPage ? 'Password Reset Page' : isHomePage ? 'Home Page' : 'Other',
+                severity: 'MEDIUM',
+                verdict: '⚠️ <base href> tag found — potential Host Header Injection target',
+                reason: 'Base tag can affect all relative URLs on page if Host header is reflected',
+                testPayload: `Host: evil.com`,
+                note: 'If base href reflects Host header, all links/forms become attackable'
+            });
+        }
+    }
+
+    // 3. Check password reset forms specifically
+    if (isPasswordResetPage) {
+        const forms = document.querySelectorAll('form');
+        forms.forEach(form => {
+            const action = form.getAttribute('action') || '';
+
+            // Check if form has email/username field (typical for password reset)
+            const hasEmailField = form.querySelector('input[type="email"], input[name*="email"], input[name*="user"], input[placeholder*="email"]');
+
+            if (hasEmailField) {
+                findings.host_header.push({
+                    type: 'password-reset-form',
+                    element: `<form action="${action}">`,
+                    url: action || window.location.href,
+                    pageType: 'Password Reset Page',
+                    severity: 'HIGH',
+                    verdict: '🚨 Password Reset Form — HIGH PRIORITY Host Header Injection target!',
+                    reason: 'Password reset links often use Host header to generate reset URLs sent via email',
+                    testPayload: `Host: evil.com\\r\\nX-Forwarded-Host: evil.com\\r\\nX-Forwarded-Server: evil.com`,
+                    note: 'Submit form with modified Host header — check if reset email contains attacker domain',
+                    impactExample: 'Attacker triggers reset → victim clicks link → token sent to attacker domain'
+                });
+            }
+        });
+
+        // Check for hidden token fields that might be in reset links
+        const tokenInputs = document.querySelectorAll('input[name*="token"], input[name*="code"], input[name*="key"], input[name*="hash"]');
+        if (tokenInputs.length > 0) {
+            findings.host_header.push({
+                type: 'reset-token-present',
+                element: `Found ${tokenInputs.length} token field(s)`,
+                url: window.location.href,
+                pageType: 'Password Reset Page',
+                severity: 'INFO',
+                verdict: '💡 Reset token fields detected — verify token delivery mechanism',
+                reason: 'Tokens in reset flow may be vulnerable to Host Header attacks during link generation',
+                testPayload: `X-Forwarded-Host: evil.com`,
+                note: 'Check Burp/proxy for how reset links are constructed'
+            });
+        }
+    }
+
+    // 4. Check login/registration forms (for account takeover chains)
+    if (isLoginPage || isRegistrationPage) {
+        const forms = document.querySelectorAll('form');
+        forms.forEach(form => {
+            const action = form.getAttribute('action') || '';
+            findings.host_header.push({
+                type: isLoginPage ? 'login-form' : 'registration-form',
+                element: `<form action="${action}">`,
+                url: action || window.location.href,
+                pageType: isLoginPage ? 'Login Page' : 'Registration Page',
+                severity: 'MEDIUM',
+                verdict: `⚠️ ${isLoginPage ? 'Login' : 'Registration'} Form — test Host Header for redirect poisoning`,
+                reason: 'Post-auth redirects often use Host header for callback URLs',
+                testPayload: `Host: evil.com\\r\\nX-Forwarded-Host: evil.com`,
+                note: 'Check if post-login redirect or confirmation emails reflect Host header'
+            });
+        });
+    }
+
+    // 5. Check for email-related forms (contact, invite, share)
+    const emailForms = document.querySelectorAll('form[action*="mail"], form[action*="invite"], form[action*="share"], form[action*="send"], form[action*="contact"]');
+    emailForms.forEach(form => {
+        const action = form.getAttribute('action') || '';
+        findings.host_header.push({
+            type: 'email-form',
+            element: `<form action="${action}">`,
+            url: action || window.location.href,
+            pageType: 'Email/Invite Form',
+            severity: 'MEDIUM',
+            verdict: '⚠️ Email/Invite Form — links in emails may reflect Host header',
+            reason: 'Invitation/share links sent via email often use Host header for URL generation',
+            testPayload: `X-Forwarded-Host: evil.com`,
+            note: 'Submit form with modified headers — check outgoing email for attacker domain'
+        });
+    });
+
+    // 6. Check for absolute URLs in JavaScript that reference current host
+    const inlineScripts = document.querySelectorAll('script:not([src])');
+    inlineScripts.forEach(script => {
+        const code = script.textContent || '';
+
+        // Look for patterns where host/origin is being used
+        const hostPatterns = [
+            { pattern: /window\.location\.host/gi, type: 'window.location.host' },
+            { pattern: /window\.location\.origin/gi, type: 'window.location.origin' },
+            { pattern: /document\.location\.host/gi, type: 'document.location.host' },
+            { pattern: new RegExp(`['"\`]https?://${currentHost.replace(/\./g, '\\.')}`, 'gi'), type: 'hardcoded-origin' },
+            { pattern: /apiUrl\s*[=:]\s*['"`]/gi, type: 'apiUrl-assignment' },
+            { pattern: /baseUrl\s*[=:]\s*['"`]/gi, type: 'baseUrl-assignment' },
+            { pattern: /serverUrl\s*[=:]\s*['"`]/gi, type: 'serverUrl-assignment' }
+        ];
+
+        hostPatterns.forEach(({ pattern, type }) => {
+            if (pattern.test(code)) {
+                // Only add one finding per script per pattern type
+                const existingFinding = findings.host_header.find(f => f.type === `js-${type}` && f.element.includes(script.textContent.substring(0, 50)));
+                if (!existingFinding) {
+                    findings.host_header.push({
+                        type: `js-${type}`,
+                        element: `JS pattern: ${type}`,
+                        url: window.location.href,
+                        pageType: isPasswordResetPage ? 'Password Reset Page' : isHomePage ? 'Home Page' : 'Other',
+                        severity: 'LOW',
+                        verdict: `💡 JavaScript uses ${type} — may reflect in dynamic URLs`,
+                        reason: 'Client-side URL construction from location object can be affected by Host header if server reflects it',
+                        testPayload: `Host: evil.com`,
+                        note: 'Check if server-side reflects Host into HTML/JS that client then uses'
+                    });
+                }
+            }
+        });
+    });
+
+    // 7. Check for redirect-related meta tags
+    const refreshMeta = document.querySelector('meta[http-equiv="refresh"]');
+    if (refreshMeta) {
+        const content = refreshMeta.getAttribute('content') || '';
+        if (content.includes('url=')) {
+            findings.host_header.push({
+                type: 'meta-refresh',
+                element: refreshMeta.outerHTML,
+                url: content,
+                pageType: isPasswordResetPage ? 'Password Reset Page' : 'Other',
+                severity: 'MEDIUM',
+                verdict: '⚠️ Meta refresh redirect — test Host Header Injection',
+                reason: 'Meta refresh URL may be constructed using Host header server-side',
+                testPayload: `Host: evil.com`,
+                note: 'If redirect URL reflects Host header, open redirect via HHI is possible'
+            });
+        }
+    }
+
+    // 8. Check for common Host Header injection headers in link generation hints
+    const links = document.querySelectorAll('a[href]');
+    let absoluteLinksToSelf = 0;
+    links.forEach(link => {
+        const href = link.getAttribute('href');
+        if (href && href.includes(currentOrigin)) {
+            absoluteLinksToSelf++;
+        }
+    });
+
+    if (absoluteLinksToSelf > 3) {
+        findings.host_header.push({
+            type: 'absolute-links',
+            element: `${absoluteLinksToSelf} absolute links to current origin`,
+            url: currentOrigin,
+            pageType: isPasswordResetPage ? 'Password Reset Page' : isHomePage ? 'Home Page' : 'Other',
+            severity: 'LOW',
+            verdict: '💡 Multiple absolute URLs — page may generate URLs from Host header',
+            reason: 'Absolute URLs are often constructed using Host header server-side',
+            testPayload: `Host: evil.com\\r\\nX-Forwarded-Host: evil.com\\r\\nX-Host: evil.com`,
+            note: 'Test with Burp: change Host header and look for reflection in response'
+        });
+    }
+
+    // 9. Common headers to test (provide as reference)
+    if (isPasswordResetPage || isHomePage) {
+        findings.host_header.push({
+            type: 'test-headers-reference',
+            element: 'Reference: Headers to test',
+            url: window.location.href,
+            pageType: isPasswordResetPage ? 'Password Reset Page' : 'Home Page',
+            severity: 'INFO',
+            verdict: '📋 Headers to test for Host Header Injection:',
+            reason: 'Different frameworks/proxies respect different headers',
+            testPayload: [
+                'Host: evil.com',
+                'X-Forwarded-Host: evil.com',
+                'X-Host: evil.com',
+                'X-Forwarded-Server: evil.com',
+                'X-HTTP-Host-Override: evil.com',
+                'X-Original-URL: /path',
+                'X-Rewrite-URL: /path',
+                'Forwarded: host=evil.com'
+            ].join('\\n'),
+            note: 'Try each header individually and in combination with original Host'
+        });
+    }
+}
+
 // ---- Endpoint Miner (Filtered v3.5) ----
 function mineEndpoints(findings) {
     const staticExtRegex = /\.(css|map|woff2?|ttf|eot|otf|png|jpe?g|gif|svg|ico|webp|avif|bmp|mp4|webm|mp3|wav|ogg|m4a|mov|avi|pdf|docx?|xlsx?|pptx?|txt|rtf|zip|rar|7z|tar|gz|tgz|xml|json|apk|exe|dmg|iso)(\?.*)?$/i;
@@ -1751,6 +2183,7 @@ function saveFindings(findings) {
         data.js_protections = findings.js_protections;
         data.sourcemaps = findings.sourcemaps;
         data.sri_issues = findings.sri_issues;
+        data.host_header = findings.host_header;
         data.lastScan = new Date().toISOString();
         data.pageUrl = window.location.href;
 

@@ -225,6 +225,20 @@
             </div>
         </div>
 
+        <!-- Host Header Injection -->
+        <div class="card">
+            <h2 class="toggle" data-target="hostHeaderContent">
+                <span>🎯 Host Header Injection</span>
+                <span id="hostHeaderCount" class="count">0</span>
+            </h2>
+            <div class="content hidden" id="hostHeaderContent">
+                <div id="hostHeaderSummary" style="font-size: 11px; margin-bottom: 8px; color: var(--text-secondary);">
+                    Password reset & redirect pages are prime targets for Host Header attacks.
+                </div>
+                <ul id="hostHeaderList" class="list"></ul>
+            </div>
+        </div>
+
         <!-- Cookie Security -->
         <div class="card">
             <h2 class="toggle" data-target="cookieContent">

@@ -1,9 +1,9 @@
 {
     "manifest_version": 3,
     "name": "BountySleuth - Web Sec Analyzer",
-    "version": "3.6.5",
+    "version": "3.6.6",
     "author": "Security0x0 Research And Development Private Limited",
-    "description": "Professional bug bounty companion v3.6.5. Cache Deception, SRI Scanner, NPM Takeover, Source Map Unpacker, WAF, CSRF, XSS, DOM Sinks, CORS & Cloud Detection.",
+    "description": "Professional bug bounty companion v3.6.6. Cache Deception, SRI Scanner, NPM Takeover, Source Map Unpacker, WAF, CSRF, XSS, DOM Sinks, CORS & Cloud Detection.",
     "icons": {
         "48": "icon.png",
         "128": "icon.png"

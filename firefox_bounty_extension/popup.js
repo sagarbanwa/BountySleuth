@@ -187,6 +187,7 @@ function loadData(host) {
         renderNpmPackages(data);
         renderCacheIssues(data);
         renderSRIIssues(data);
+        renderHostHeaderInjection(data);
 
         // Render JS Protections badge if found
         renderProtections(data);
@@ -881,6 +882,87 @@ function renderSRIIssues(data) {
                 window.open(issue.url, '_blank');
             }
         };
+
+        list.appendChild(li);
+    });
+}
+
+// ---- Host Header Injection (v3.6.5) ----
+function renderHostHeaderInjection(data) {
+    const findings = data.host_header || [];
+    const highCount = findings.filter(f => f.severity === 'HIGH').length;
+    const mediumCount = findings.filter(f => f.severity === 'MEDIUM').length;
+
+    let badgeSeverity = 'info';
+    if (highCount > 0) badgeSeverity = 'high';
+    else if (mediumCount > 0) badgeSeverity = 'medium';
+    setCount('hostHeaderCount', findings.length, findings.length > 0 ? badgeSeverity : null);
+
+    const list = document.getElementById('hostHeaderList');
+    const summary = document.getElementById('hostHeaderSummary');
+    list.innerHTML = '';
+
+    if (findings.length === 0) {
+        list.innerHTML = '<li class="empty-state">No Host Header Injection indicators detected on this page.</li>';
+        summary.textContent = 'Navigate to password reset or login pages for better detection.';
+        return;
+    }
+
+    const pwdResetCount = findings.filter(f => f.pageType === 'Password Reset Page').length;
+    summary.textContent = `Found ${findings.length} potential target${findings.length > 1 ? 's' : ''}. ${pwdResetCount > 0 ? '🔥 ' + pwdResetCount + ' on password reset!' : ''}`;
+
+    findings.forEach(finding => {
+        let sevClass = 'info';
+        if (finding.severity === 'HIGH') sevClass = 'high';
+        else if (finding.severity === 'MEDIUM') sevClass = 'medium';
+        else if (finding.severity === 'LOW') sevClass = 'low';
+
+        const typeIcon = finding.type.includes('password') ? '🔑' :
+                        finding.type.includes('login') ? '🔐' :
+                        finding.type.includes('email') ? '📧' :
+                        finding.type.includes('meta') ? '📋' :
+                        finding.type.includes('base') ? '🏠' :
+                        finding.type.includes('js') ? '📜' : '🎯';
+
+        let text = `${typeIcon} ${finding.type.toUpperCase()}`;
+        text += `\n📍 Page: ${finding.pageType}`;
+        text += `\n${finding.verdict}`;
+        if (finding.reason) text += `\n💡 ${finding.reason}`;
+        if (finding.note) text += `\n📝 ${finding.note}`;
+
+        const li = createListItem(text, sevClass);
+        li.appendChild(createSevTag(finding.severity));
+
+        // Add copy payload button for test payloads
+        if (finding.testPayload && finding.severity !== 'INFO') {
+            const payloadBox = document.createElement('div');
+            payloadBox.className = 'sourcemap-actions';
+            payloadBox.style.marginTop = '6px';
+
+            const payloadItem = document.createElement('div');
+            payloadItem.className = 'payload-item';
+
+            const payloadCode = document.createElement('div');
+            payloadCode.className = 'payload-code';
+            payloadCode.textContent = finding.testPayload.substring(0, 80) + (finding.testPayload.length > 80 ? '...' : '');
+            payloadCode.style.fontSize = '9px';
+
+            const copyBtn = document.createElement('button');
+            copyBtn.className = 'payload-copy-btn';
+            copyBtn.textContent = '📋 Copy Payload';
+            copyBtn.onclick = (e) => {
+                e.stopPropagation();
+                const payload = finding.testPayload.replace(/\\n/g, '\n').replace(/\\r/g, '\r');
+                navigator.clipboard.writeText(payload);
+                copyBtn.textContent = '✓ Copied';
+                setTimeout(() => copyBtn.textContent = '📋 Copy Payload', 1500);
+            };
+
+            payloadItem.appendChild(payloadCode);
+            payloadItem.appendChild(copyBtn);
+            payloadBox.appendChild(payloadItem);
+            li.appendChild(payloadBox);
+        }
 
         list.appendChild(li);
     });
