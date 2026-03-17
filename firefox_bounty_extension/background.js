@@ -100,8 +100,8 @@ chrome.webRequest.onHeadersReceived.addListener(
             // 4. Server Info Leaks
             checkServerInfo(headerMap, analysis);
 
-            // 5. Cache Security Analysis
-            checkCacheSecurity(headerMap, analysis, details.url, isMain);
+            // 5. Cache Security Analysis (pass status code for FP reduction)
+            checkCacheSecurity(headerMap, analysis, details.url, isMain, details.statusCode);
 
             // Save and Sync
             chrome.storage.local.get([host], (result) => {
@@ -309,17 +309,49 @@ function checkServerInfo(headerMap, analysis) {
     });
 }
 
-// ---- Cache Security Analysis (Enhanced v3.6.5 - Advanced Cache Deception) ----
-function checkCacheSecurity(headerMap, analysis, requestUrl, isMainFrame) {
+// ---- Cache Security Analysis (Enhanced v3.6.6 - Reduced False Positives) ----
+function checkCacheSecurity(headerMap, analysis, requestUrl, isMainFrame, statusCode) {
     const cacheControl = (headerMap['cache-control'] || '').toLowerCase();
     const vary = (headerMap['vary'] || '').toLowerCase();
     const cdnCacheControl = headerMap['cdn-cache-control'] || headerMap['cloudflare-cdn-cache-control'] || headerMap['surrogate-control'];
     const pragma = (headerMap['pragma'] || '').toLowerCase();
-    const xCache = headerMap['x-cache'] || '';
-    const cfCacheStatus = headerMap['cf-cache-status'] || '';
+    const xCache = (headerMap['x-cache'] || '').toLowerCase();
+    const cfCacheStatus = (headerMap['cf-cache-status'] || '').toLowerCase();
     const age = headerMap['age'] || '';
     const etag = headerMap['etag'] || '';
     const lastModified = headerMap['last-modified'] || '';
+    const contentType = (headerMap['content-type'] || '').toLowerCase();
+
+    // ===== FALSE POSITIVE REDUCTION CHECKS =====
+    // Check 1: Response status code - 4xx/5xx responses are NOT vulnerable (no sensitive data exposed)
+    const isErrorResponse = statusCode && (statusCode >= 400 || statusCode < 200);
+
+    // Check 2: CDN explicitly bypassed/not cached
+    const cdnNotCached = cfCacheStatus === 'bypass' || cfCacheStatus === 'dynamic' ||
+                         cfCacheStatus === 'expired' || xCache.includes('bypass') ||
+                         xCache.includes('miss') && (cacheControl.includes('no-store') || cacheControl.includes('private'));
+
+    // Check 3: Response explicitly marked as non-cacheable
+    const explicitlyNonCacheable = cacheControl.includes('no-store') ||
+                                   cacheControl.includes('private') ||
+                                   (cacheControl.includes('no-cache') && cacheControl.includes('must-revalidate'));
+
+    // Check 4: Content-Type mismatch detection (404 page returned as HTML for .css request)
+    const urlExtension = (requestUrl.match(/\.([a-z0-9]+)(?:\?|$)/i) || [])[1] || '';
+    const expectedTypes = {
+        'css': 'text/css',
+        'js': 'javascript',
+        'json': 'application/json',
+        'xml': 'xml',
+        'jpg': 'image/',
+        'jpeg': 'image/',
+        'png': 'image/',
+        'gif': 'image/',
+        'svg': 'svg',
+        'ico': 'image/'
+    };
+    const expectedType = expectedTypes[urlExtension.toLowerCase()];
+    const hasContentTypeMismatch = expectedType && contentType && !contentType.includes(expectedType) && contentType.includes('text/html');
 
     // Sensitive URL patterns that should NOT be publicly cached
     const sensitivePatterns = /\/(api|auth|login|logout|register|signup|password|reset|account|profile|admin|dashboard|checkout|payment|order|cart|session|token|user|me|private|internal|settings|billing|subscription|graphql|oauth|callback|webhook)/i;
@@ -371,6 +403,10 @@ function checkCacheSecurity(headerMap, analysis, requestUrl, isMainFrame) {
     const maxAge = maxAgeMatch ? parseInt(maxAgeMatch[1]) : null;
     const sMaxAgeMatch = cacheControl.match(/s-maxage\s*=\s*(\d+)/);
     const sMaxAge = sMaxAgeMatch ? parseInt(sMaxAgeMatch[1]) : null;
+
+    // ===== CACHEABILITY ASSESSMENT =====
+    // Response is ONLY cacheable if it meets these conditions
+    const isCacheable = !isErrorResponse && !explicitlyNonCacheable && !cdnNotCached && !hasContentTypeMismatch;
 
     let issues = [];
 
@@ -455,10 +491,15 @@ function checkCacheSecurity(headerMap, analysis, requestUrl, isMainFrame) {
         });
     }
 
-    // Check 7: Web Cache Deception vulnerability patterns (Advanced)
-    if (hasPathConfusion && !isPrivate && !hasNoStore) {
+    // Check 7: Web Cache Deception vulnerability patterns (Advanced v3.6.6 - Reduced FP)
+    // ONLY flag if:
+    // 1. URL has path confusion pattern
+    // 2. Response IS potentially cacheable (not 4xx/5xx, not private/no-store, not CDN bypassed)
+    // 3. Content-Type matches expected type (not a 404 HTML page for .css request)
+    if (hasPathConfusion && isCacheable) {
         let deceptionType = 'basic static extension';
         let deceptionExample = '/profile.css';
+        let confidence = 'HIGH';
 
         if (hasDelimiterConfusion) {
             deceptionType = 'delimiter-based confusion';
@@ -477,18 +518,25 @@ function checkCacheSecurity(headerMap, analysis, requestUrl, isMainFrame) {
             deceptionExample = '/account.js/anything';
         }
 
+        // Additional confidence boost if cache is actually being used
+        const hasCacheEvidence = cfCacheStatus === 'hit' || xCache.includes('hit') || age || etag;
+        if (hasCacheEvidence) {
+            confidence = 'CRITICAL';
+        }
+
         issues.push({
             url: requestUrl,
             type: 'cache-deception',
-            severity: 'HIGH',
+            severity: confidence,
             verdict: `🚨 Web Cache Deception — ${deceptionType} detected!`,
             header: `Pattern: ${deceptionExample}`,
+            cacheEvidence: hasCacheEvidence ? `Cache active: ${cfCacheStatus || xCache || 'age/etag present'}` : 'No cache evidence yet - test manually',
             recommendation: 'Ensure Cache-Control: private, no-store on all authenticated responses regardless of URL structure'
         });
     }
 
     // Check 8: X-Cache HIT on sensitive endpoint (evidence of caching)
-    if (isSensitiveUrl && (xCache.toLowerCase().includes('hit') || cfCacheStatus.toLowerCase() === 'hit')) {
+    if (isSensitiveUrl && (xCache.includes('hit') || cfCacheStatus === 'hit')) {
         issues.push({
             url: requestUrl,
             type: 'cache-hit-sensitive',
@@ -743,31 +791,80 @@ async function unpackSourceMap(url, hostname) {
     const mapFileName = url.split('/').pop().split('?')[0] || 'source.map';
     zip.addFile('src_unpacked/' + mapFileName, text);
 
+    console.log('[BountySleuth] Source map has', map.sources.length, 'sources');
+    console.log('[BountySleuth] Source map has', map.sourcesContent ? map.sourcesContent.length : 0, 'sourcesContent entries');
+
+    // Count how many sourcesContent entries have actual content
+    let contentCount = 0;
+    if (map.sourcesContent) {
+        for (let i = 0; i < map.sourcesContent.length; i++) {
+            if (map.sourcesContent[i] && map.sourcesContent[i].length > 0) {
+                contentCount++;
+            }
+        }
+    }
+    console.log('[BountySleuth] sourcesContent with actual content:', contentCount);
+
     // Reconstruct all source files
     let addedCount = 0;
+    let skippedNoContent = 0;
+    let skippedEmptyPath = 0;
+
     for (let i = 0; i < map.sources.length; i++) {
-        const content = map.sourcesContent[i];
-        if (!content) continue;
+        const content = map.sourcesContent ? map.sourcesContent[i] : null;
+        if (!content || content.length === 0) {
+            skippedNoContent++;
+            continue;
+        }
 
         let sourcePath = map.sources[i];
+        const originalPath = sourcePath;
+
         // Normalize paths from various bundlers
         sourcePath = sourcePath
-            .replace(/^webpack:\/\/\//i, '')
+            // Remove webpack protocol prefixes
+            .replace(/^webpack:\/\/\/?/i, '')
             .replace(/^webpack:\/\/[^/]*\//i, '')
+            // Remove Angular prefix
             .replace(/^ng:\/\//i, '')
-            .replace(/^\.\//g, '')
-            .replace(/^\.\.\//g, 'parent/')
+            // Remove Vite prefix
+            .replace(/^\/?@fs\//i, '')
+            .replace(/^\/?@id\//i, '')
+            // Remove file:// prefix
+            .replace(/^file:\/\/\//i, '')
+            // Remove leading ./ but keep the rest
+            .replace(/^\.\//, '')
+            // Handle ../ by replacing with _parent/
+            .replace(/\.\.\//g, '_parent/')
+            // Remove Windows drive letters
             .replace(/^[a-z]:\//i, '')
-            .split('?')[0];
+            .replace(/^[a-z]:\\/i, '')
+            // Remove query strings
+            .split('?')[0]
+            // Remove leading slashes
+            .replace(/^\/+/, '')
+            // Sanitize any remaining problematic characters
+            .replace(/[<>:"|?*]/g, '_');
 
         // Skip empty paths
-        if (!sourcePath || sourcePath === '') continue;
+        if (!sourcePath || sourcePath.trim() === '') {
+            skippedEmptyPath++;
+            console.log('[BountySleuth] Skipped empty path, original:', originalPath);
+            continue;
+        }
 
-        zip.addFile('src_unpacked/' + sourcePath, content);
-        addedCount++;
+        // Add to ZIP
+        try {
+            zip.addFile('src_unpacked/' + sourcePath, content);
+            addedCount++;
+        } catch (e) {
+            console.error('[BountySleuth] Error adding file:', sourcePath, e);
+        }
     }
 
     console.log('[BountySleuth] Added', addedCount, 'source files to ZIP');
+    console.log('[BountySleuth] Skipped (no content):', skippedNoContent);
+    console.log('[BountySleuth] Skipped (empty path):', skippedEmptyPath);
 
     // Extract packages for the NPM analyzer
     const packageMap = {};
@@ -811,26 +908,64 @@ async function unpackSourceMap(url, hostname) {
     const zipData = zip.toUint8Array();
     console.log('[BountySleuth] ZIP created, size:', zipData.length, 'bytes');
 
-    // Convert to base64 data URL (more reliable in MV3 service workers than blob URLs)
-    const base64 = uint8ArrayToBase64(zipData);
-    const dataUrl = `data:application/zip;base64,${base64}`;
     const baseName = hostname || mapFileName.replace('.js.map', '').replace('.css.map', '').replace('.map', '');
-
     console.log('[BountySleuth] Starting download for:', baseName);
+
+    // Use blob URL for large files, data URL for small files
+    // Data URLs have ~2MB limit in some browsers
+    const useDataUrl = zipData.length < 1500000; // 1.5MB threshold
+
+    let downloadUrl;
+    let blobUrl = null;
+
+    if (useDataUrl) {
+        const base64 = uint8ArrayToBase64(zipData);
+        downloadUrl = `data:application/zip;base64,${base64}`;
+        console.log('[BountySleuth] Using data URL (small file)');
+    } else {
+        // For large files, use blob URL with lifecycle management
+        const blob = new Blob([zipData], { type: 'application/zip' });
+        blobUrl = URL.createObjectURL(blob);
+        downloadUrl = blobUrl;
+        console.log('[BountySleuth] Using blob URL (large file:', zipData.length, 'bytes)');
+    }
 
     return new Promise((resolve, reject) => {
         chrome.downloads.download({
-            url: dataUrl,
+            url: downloadUrl,
             filename: `BountySleuth_Unpacked/${baseName}_source_code.zip`,
             saveAs: false
         }, (downloadId) => {
             if (chrome.runtime.lastError) {
                 console.error('[BountySleuth] Download error:', chrome.runtime.lastError);
+                if (blobUrl) URL.revokeObjectURL(blobUrl);
                 reject(new Error(chrome.runtime.lastError.message));
-            } else {
-                console.log('[BountySleuth] Download started, ID:', downloadId);
-                resolve({ downloadId, fileCount: addedCount, packages: extractedPackages });
+                return;
             }
+
+            console.log('[BountySleuth] Download started, ID:', downloadId);
+
+            // For blob URLs, revoke after download completes
+            if (blobUrl && downloadId) {
+                const listener = (delta) => {
+                    if (delta.id === downloadId && delta.state) {
+                        if (delta.state.current === 'complete' || delta.state.current === 'interrupted') {
+                            console.log('[BountySleuth] Download finished, revoking blob URL');
+                            URL.revokeObjectURL(blobUrl);
+                            chrome.downloads.onChanged.removeListener(listener);
+                        }
+                    }
+                };
+                chrome.downloads.onChanged.addListener(listener);
+
+                // Fallback: revoke after 5 minutes if listener doesn't fire
+                setTimeout(() => {
+                    URL.revokeObjectURL(blobUrl);
+                    chrome.downloads.onChanged.removeListener(listener);
+                }, 300000);
+            }
+
+            resolve({ downloadId, fileCount: addedCount, packages: extractedPackages });
         });
     });
 }
@@ -848,7 +983,7 @@ function uint8ArrayToBase64(uint8Array) {
 
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     if (request.action === 'downloadSourceMap' && request.url) {
-        // Fetch content first, then download via data URL (fixes CORS/MV3 issues)
+        // Fetch content first, then download (handles CORS/MV3 issues)
         (async () => {
             try {
                 const filename = request.url.split('/').pop().split('?')[0] || 'sourcemap.map';
@@ -865,26 +1000,58 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
                     return;
                 }
 
-                // Convert to base64 data URL (more reliable in MV3 service workers)
                 const arrayBuffer = await response.arrayBuffer();
                 const uint8Array = new Uint8Array(arrayBuffer);
-                const base64 = uint8ArrayToBase64(uint8Array);
-                const dataUrl = `data:application/json;base64,${base64}`;
-
                 console.log('[BountySleuth] Fetched, size:', uint8Array.length, 'bytes');
 
+                // Use blob URL for large files (>1.5MB), data URL for small files
+                const useDataUrl = uint8Array.length < 1500000;
+                let downloadUrl;
+                let blobUrl = null;
+
+                if (useDataUrl) {
+                    const base64 = uint8ArrayToBase64(uint8Array);
+                    downloadUrl = `data:application/json;base64,${base64}`;
+                    console.log('[BountySleuth] Using data URL (small file)');
+                } else {
+                    const blob = new Blob([uint8Array], { type: 'application/json' });
+                    blobUrl = URL.createObjectURL(blob);
+                    downloadUrl = blobUrl;
+                    console.log('[BountySleuth] Using blob URL (large file)');
+                }
+
                 chrome.downloads.download({
-                    url: dataUrl,
+                    url: downloadUrl,
                     filename: `BountySleuth_SourceMaps/${filename}`,
                     saveAs: false
                 }, (downloadId) => {
                     if (chrome.runtime.lastError) {
                         console.error('[BountySleuth] Download error:', chrome.runtime.lastError);
+                        if (blobUrl) URL.revokeObjectURL(blobUrl);
                         sendResponse({ status: 'error', message: chrome.runtime.lastError.message });
-                    } else {
-                        console.log('[BountySleuth] Download started, ID:', downloadId);
-                        sendResponse({ status: 'download_started', downloadId });
+                        return;
                     }
+
+                    console.log('[BountySleuth] Download started, ID:', downloadId);
+
+                    // For blob URLs, revoke after download completes
+                    if (blobUrl && downloadId) {
+                        const listener = (delta) => {
+                            if (delta.id === downloadId && delta.state) {
+                                if (delta.state.current === 'complete' || delta.state.current === 'interrupted') {
+                                    URL.revokeObjectURL(blobUrl);
+                                    chrome.downloads.onChanged.removeListener(listener);
+                                }
+                            }
+                        };
+                        chrome.downloads.onChanged.addListener(listener);
+                        setTimeout(() => {
+                            URL.revokeObjectURL(blobUrl);
+                            chrome.downloads.onChanged.removeListener(listener);
+                        }, 300000);
+                    }
+
+                    sendResponse({ status: 'download_started', downloadId });
                 });
             } catch (e) {
                 console.error('[BountySleuth] Download error:', e);

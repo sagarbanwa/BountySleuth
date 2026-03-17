@@ -103,6 +103,11 @@ Pre-compiled files for both Google Chrome and Mozilla Firefox are available in t
 
 ## 📝 Changelog
 
+### v3.6.7 — Core Scanner Refinements & Better Source Maps
+- 🔧 **Improved: Cache Security Analysis** — Drastically reduced false positives by evaluating response status codes, explicitly non-cacheable headers (no-store, private), CDN bypass indicators, and content-type mismatches.
+- 🔧 **Improved: Web Cache Deception** — Added strict cacheability assessment before flagging potential path confusion vulnerabilities.
+- 🐛 **Fix: Enhanced Source Map Unpacking** — Improved path sanitization (stripping webpack, vite, ng protocols) to prevent ZIP creation errors. Added dynamic blob/data URL generation based on source map size to support larger files and bypass browser limitations.
+
 ### v3.6.6 — Host Header Injection & Source Map Fixes
 - ✨ **New: Host Header Injection** — Automatically analyzes requests for Host Header vulnerabilities by injecting common payloads and monitoring responses.
 - 🐛 **Fix: Enhanced Source Map Unpacker** — Fixed compatibility issues with Chrome-based source maps, ensuring more robust one-click ZIP downloads of frontend directory structures.
