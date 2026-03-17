@@ -757,24 +757,145 @@ class SimpleZipWriter {
     }
 }
 
-async function unpackSourceMap(url, hostname) {
+async function unpackSourceMap(url, hostname, tabId) {
     console.log('[BountySleuth] Starting unpack for:', url);
+    console.log('[BountySleuth] Tab ID:', tabId);
 
-    // Include credentials for authenticated source maps
-    const resp = await fetch(url, {
-        credentials: 'include',
-        mode: 'cors'
-    });
-    if (!resp.ok) throw new Error(`Failed to fetch source map: HTTP ${resp.status}`);
+    let text = null;
+    let lastError = null;
 
-    const text = await resp.text();
-    console.log('[BountySleuth] Fetched source map, size:', text.length);
+    // Strategy 1: Background fetch with credentials
+    try {
+        console.log('[BountySleuth] Strategy 1: fetch with credentials...');
+        const resp = await fetch(url, { credentials: 'include', mode: 'cors' });
+        if (resp.ok) {
+            text = await resp.text();
+            console.log('[BountySleuth] Strategy 1 SUCCESS, size:', text.length);
+        } else {
+            throw new Error(`HTTP ${resp.status}`);
+        }
+    } catch (e) {
+        console.log('[BountySleuth] Strategy 1 failed:', e.message);
+        lastError = e;
+    }
 
+    // Strategy 2: Background fetch without credentials
+    if (!text) {
+        try {
+            console.log('[BountySleuth] Strategy 2: fetch without credentials...');
+            const resp = await fetch(url, { credentials: 'omit', mode: 'cors' });
+            if (resp.ok) {
+                text = await resp.text();
+                console.log('[BountySleuth] Strategy 2 SUCCESS, size:', text.length);
+            } else {
+                throw new Error(`HTTP ${resp.status}`);
+            }
+        } catch (e) {
+            console.log('[BountySleuth] Strategy 2 failed:', e.message);
+            lastError = e;
+        }
+    }
+
+    // Strategy 3: Simple fetch
+    if (!text) {
+        try {
+            console.log('[BountySleuth] Strategy 3: simple fetch...');
+            const resp = await fetch(url);
+            if (resp.ok) {
+                text = await resp.text();
+                console.log('[BountySleuth] Strategy 3 SUCCESS, size:', text.length);
+            } else {
+                throw new Error(`HTTP ${resp.status}`);
+            }
+        } catch (e) {
+            console.log('[BountySleuth] Strategy 3 failed:', e.message);
+            lastError = e;
+        }
+    }
+
+    // Strategy 4: Content script via browser.scripting.executeScript (using sync XHR)
+    if (!text && tabId) {
+        try {
+            console.log('[BountySleuth] Strategy 4: executeScript with sync XHR...');
+            const results = await browser.scripting.executeScript({
+                target: { tabId: tabId },
+                func: (mapUrl) => {
+                    try {
+                        // Use synchronous XMLHttpRequest (works reliably in executeScript)
+                        const xhr = new XMLHttpRequest();
+                        xhr.open('GET', mapUrl, false); // false = synchronous
+                        xhr.setRequestHeader('Accept', 'application/json, */*');
+                        xhr.send(null);
+                        if (xhr.status >= 200 && xhr.status < 300) {
+                            return { success: true, text: xhr.responseText, length: xhr.responseText.length };
+                        } else {
+                            return { error: `HTTP ${xhr.status}` };
+                        }
+                    } catch (e) {
+                        return { error: e.message || 'XHR failed' };
+                    }
+                },
+                args: [url]
+            });
+
+            if (results && results[0] && results[0].result) {
+                if (results[0].result.success) {
+                    text = results[0].result.text;
+                    console.log('[BountySleuth] Strategy 4 SUCCESS, size:', results[0].result.length);
+                } else if (results[0].result.error) {
+                    throw new Error(results[0].result.error);
+                }
+            } else {
+                throw new Error('No result from executeScript');
+            }
+        } catch (e) {
+            console.log('[BountySleuth] Strategy 4 failed:', e.message);
+            lastError = e;
+        }
+    }
+
+    // Strategy 5: Send message to content script
+    if (!text && tabId) {
+        try {
+            console.log('[BountySleuth] Strategy 5: sendMessage to content script...');
+            text = await new Promise((resolve, reject) => {
+                const timeout = setTimeout(() => reject(new Error('Timeout after 30s')), 30000);
+                browser.tabs.sendMessage(tabId, { action: 'fetchSourceMap', url: url }).then((response) => {
+                    clearTimeout(timeout);
+                    if (response && response.text) {
+                        resolve(response.text);
+                    } else if (response && response.error) {
+                        reject(new Error(response.error));
+                    } else {
+                        reject(new Error('Invalid response from content script'));
+                    }
+                }).catch((err) => {
+                    clearTimeout(timeout);
+                    reject(err);
+                });
+            });
+            console.log('[BountySleuth] Strategy 5 SUCCESS, size:', text.length);
+        } catch (e) {
+            console.log('[BountySleuth] Strategy 5 failed:', e.message);
+            lastError = e;
+        }
+    }
+
+    // All strategies failed
+    if (!text) {
+        const errorMsg = `All fetch strategies failed. Last error: ${lastError ? lastError.message : 'Unknown'}. URL: ${url}`;
+        console.error('[BountySleuth]', errorMsg);
+        throw new Error(errorMsg);
+    }
+
+    console.log('[BountySleuth] Parsing JSON, text length:', text.length);
     let map;
     try {
         map = JSON.parse(text);
     } catch (e) {
-        throw new Error('Source map is not valid JSON');
+        console.error('[BountySleuth] JSON parse error:', e.message);
+        console.error('[BountySleuth] First 200 chars:', text.substring(0, 200));
+        throw new Error('Source map is not valid JSON: ' + e.message);
     }
 
     if (!map.sources || map.sources.length === 0) {
@@ -1060,7 +1181,10 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         })();
         return true; // Keep channel open for async response
     } else if (request.action === 'unpackSourceMap' && request.url) {
-        unpackSourceMap(request.url, request.hostname)
+        // Pass tabId for content script fallback fetch (from request or sender)
+        const tabId = request.tabId || (sender && sender.tab ? sender.tab.id : null);
+        console.log('[BountySleuth] Unpack request, tabId:', tabId);
+        unpackSourceMap(request.url, request.hostname, tabId)
             .then(result => sendResponse({
                 status: 'unpack_complete',
                 downloadId: result.downloadId,

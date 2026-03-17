@@ -31,3 +31,7 @@ releases/
 
 # Logs
 *.log
+
+# Secrets
+private_keys/
+*.pem

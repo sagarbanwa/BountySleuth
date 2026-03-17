@@ -1102,20 +1102,24 @@ function renderSourceMaps(data) {
                 e.stopPropagation();
                 unpackBtn.textContent = '⏳ Unpacking...';
                 const hostname = new URL(sm.mapUrl).hostname;
-                chrome.runtime.sendMessage({ action: 'unpackSourceMap', url: sm.mapUrl, hostname: hostname }, (response) => {
-                    if (response && response.status === 'error') {
-                        unpackBtn.textContent = '❌ Error';
-                        console.error("Unpack error:", response.message);
-                    } else {
-                        unpackBtn.textContent = '✓ Unpacked';
-                        // AUTO ACTION: Trigger NPM analysis after successful unpack
-                        // Use packages returned directly from background for speed and reliability
-                        const pkgs = (response && response.packages) ? response.packages : null;
-                        if (pkgs && pkgs.length > 0) {
-                            triggerNpmAnalysis(pkgs);
+                // Get active tab ID for content script fallback fetch
+                chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+                    const tabId = tabs[0] ? tabs[0].id : null;
+                    chrome.runtime.sendMessage({ action: 'unpackSourceMap', url: sm.mapUrl, hostname: hostname, tabId: tabId }, (response) => {
+                        if (response && response.status === 'error') {
+                            unpackBtn.textContent = '❌ Error';
+                            console.error("Unpack error:", response.message);
+                        } else {
+                            unpackBtn.textContent = '✓ Unpacked';
+                            // AUTO ACTION: Trigger NPM analysis after successful unpack
+                            // Use packages returned directly from background for speed and reliability
+                            const pkgs = (response && response.packages) ? response.packages : null;
+                            if (pkgs && pkgs.length > 0) {
+                                triggerNpmAnalysis(pkgs);
+                            }
                         }
-                    }
-                    setTimeout(() => unpackBtn.textContent = '📦 Unpack ZIP', 2000);
+                        setTimeout(() => unpackBtn.textContent = '📦 Unpack ZIP', 2000);
+                    });
                 });
             };
 

@@ -757,24 +757,182 @@ class SimpleZipWriter {
     }
 }
 
-async function unpackSourceMap(url, hostname) {
+async function unpackSourceMap(url, hostname, tabId) {
     console.log('[BountySleuth] Starting unpack for:', url);
+    console.log('[BountySleuth] Tab ID:', tabId);
 
-    // Include credentials for authenticated source maps
-    const resp = await fetch(url, {
-        credentials: 'include',
-        mode: 'cors'
-    });
-    if (!resp.ok) throw new Error(`Failed to fetch source map: HTTP ${resp.status}`);
+    let text = null;
+    let lastError = null;
 
-    const text = await resp.text();
-    console.log('[BountySleuth] Fetched source map, size:', text.length);
+    // Strategy 1: Service worker fetch with credentials
+    try {
+        console.log('[BountySleuth] Strategy 1: fetch with credentials...');
+        const resp = await fetch(url, { credentials: 'include', mode: 'cors' });
+        if (resp.ok) {
+            text = await resp.text();
+            console.log('[BountySleuth] Strategy 1 SUCCESS, size:', text.length);
+        } else {
+            throw new Error(`HTTP ${resp.status}`);
+        }
+    } catch (e) {
+        console.log('[BountySleuth] Strategy 1 failed:', e.message);
+        lastError = e;
+    }
 
+    // Strategy 2: Service worker fetch without credentials
+    if (!text) {
+        try {
+            console.log('[BountySleuth] Strategy 2: fetch without credentials...');
+            const resp = await fetch(url, { credentials: 'omit', mode: 'cors' });
+            if (resp.ok) {
+                text = await resp.text();
+                console.log('[BountySleuth] Strategy 2 SUCCESS, size:', text.length);
+            } else {
+                throw new Error(`HTTP ${resp.status}`);
+            }
+        } catch (e) {
+            console.log('[BountySleuth] Strategy 2 failed:', e.message);
+            lastError = e;
+        }
+    }
+
+    // Strategy 3: Simple fetch (default mode)
+    if (!text) {
+        try {
+            console.log('[BountySleuth] Strategy 3: simple fetch...');
+            const resp = await fetch(url);
+            if (resp.ok) {
+                text = await resp.text();
+                console.log('[BountySleuth] Strategy 3 SUCCESS, size:', text.length);
+            } else {
+                throw new Error(`HTTP ${resp.status}`);
+            }
+        } catch (e) {
+            console.log('[BountySleuth] Strategy 3 failed:', e.message);
+            lastError = e;
+        }
+    }
+
+    // Strategy 4: Send message to content script (most reliable for Chrome)
+    if (!text && tabId) {
+        try {
+            console.log('[BountySleuth] Strategy 4: sendMessage to content script...');
+            text = await new Promise((resolve, reject) => {
+                const timeout = setTimeout(() => reject(new Error('Timeout after 60s')), 60000);
+                chrome.tabs.sendMessage(tabId, { action: 'fetchSourceMap', url: url }, (response) => {
+                    clearTimeout(timeout);
+                    if (chrome.runtime.lastError) {
+                        reject(new Error(chrome.runtime.lastError.message));
+                    } else if (response && response.text) {
+                        resolve(response.text);
+                    } else if (response && response.error) {
+                        reject(new Error(response.error));
+                    } else {
+                        reject(new Error('Invalid response from content script'));
+                    }
+                });
+            });
+            console.log('[BountySleuth] Strategy 4 SUCCESS, size:', text.length);
+        } catch (e) {
+            console.log('[BountySleuth] Strategy 4 failed:', e.message);
+            lastError = e;
+        }
+    }
+
+    // Strategy 5: executeScript in MAIN world (bypasses CSP)
+    if (!text && tabId) {
+        try {
+            console.log('[BountySleuth] Strategy 5: executeScript in MAIN world...');
+            const results = await chrome.scripting.executeScript({
+                target: { tabId: tabId },
+                world: 'MAIN',
+                func: (mapUrl) => {
+                    try {
+                        const xhr = new XMLHttpRequest();
+                        xhr.open('GET', mapUrl, false);
+                        xhr.send(null);
+                        if (xhr.status >= 200 && xhr.status < 300) {
+                            return { success: true, text: xhr.responseText, length: xhr.responseText.length };
+                        } else {
+                            return { error: `HTTP ${xhr.status}` };
+                        }
+                    } catch (e) {
+                        return { error: e.message || 'XHR failed' };
+                    }
+                },
+                args: [url]
+            });
+
+            if (results && results[0] && results[0].result) {
+                if (results[0].result.success) {
+                    text = results[0].result.text;
+                    console.log('[BountySleuth] Strategy 5 SUCCESS, size:', results[0].result.length);
+                } else if (results[0].result.error) {
+                    throw new Error(results[0].result.error);
+                }
+            } else {
+                throw new Error('No result from executeScript');
+            }
+        } catch (e) {
+            console.log('[BountySleuth] Strategy 5 failed:', e.message);
+            lastError = e;
+        }
+    }
+
+    // Strategy 6: executeScript in ISOLATED world
+    if (!text && tabId) {
+        try {
+            console.log('[BountySleuth] Strategy 6: executeScript in ISOLATED world...');
+            const results = await chrome.scripting.executeScript({
+                target: { tabId: tabId },
+                func: (mapUrl) => {
+                    try {
+                        const xhr = new XMLHttpRequest();
+                        xhr.open('GET', mapUrl, false);
+                        xhr.send(null);
+                        if (xhr.status >= 200 && xhr.status < 300) {
+                            return { success: true, text: xhr.responseText, length: xhr.responseText.length };
+                        } else {
+                            return { error: `HTTP ${xhr.status}` };
+                        }
+                    } catch (e) {
+                        return { error: e.message || 'XHR failed' };
+                    }
+                },
+                args: [url]
+            });
+
+            if (results && results[0] && results[0].result) {
+                if (results[0].result.success) {
+                    text = results[0].result.text;
+                    console.log('[BountySleuth] Strategy 6 SUCCESS, size:', results[0].result.length);
+                } else if (results[0].result.error) {
+                    throw new Error(results[0].result.error);
+                }
+            } else {
+                throw new Error('No result from executeScript');
+            }
+        } catch (e) {
+            console.log('[BountySleuth] Strategy 6 failed:', e.message);
+            lastError = e;
+        }
+    }
+
+    // All strategies failed
+    if (!text) {
+        const errorMsg = `All fetch strategies failed. Last error: ${lastError ? lastError.message : 'Unknown'}. URL: ${url}`;
+        console.error('[BountySleuth]', errorMsg);
+        throw new Error(errorMsg);
+    }
+
+    console.log('[BountySleuth] Parsing JSON, text length:', text.length);
     let map;
     try {
         map = JSON.parse(text);
     } catch (e) {
-        throw new Error('Source map is not valid JSON');
+        console.error('[BountySleuth] JSON parse error:', e.message);
+        console.error('[BountySleuth] First 200 chars:', text.substring(0, 200));
+        throw new Error('Source map is not valid JSON: ' + e.message);
     }
 
     if (!map.sources || map.sources.length === 0) {
@@ -911,24 +1069,12 @@ async function unpackSourceMap(url, hostname) {
     const baseName = hostname || mapFileName.replace('.js.map', '').replace('.css.map', '').replace('.map', '');
     console.log('[BountySleuth] Starting download for:', baseName);
 
-    // Use blob URL for large files, data URL for small files
-    // Data URLs have ~2MB limit in some browsers
-    const useDataUrl = zipData.length < 1500000; // 1.5MB threshold
-
-    let downloadUrl;
-    let blobUrl = null;
-
-    if (useDataUrl) {
-        const base64 = uint8ArrayToBase64(zipData);
-        downloadUrl = `data:application/zip;base64,${base64}`;
-        console.log('[BountySleuth] Using data URL (small file)');
-    } else {
-        // For large files, use blob URL with lifecycle management
-        const blob = new Blob([zipData], { type: 'application/zip' });
-        blobUrl = URL.createObjectURL(blob);
-        downloadUrl = blobUrl;
-        console.log('[BountySleuth] Using blob URL (large file:', zipData.length, 'bytes)');
-    }
+    // Always use data URL in Chrome MV3 — blob URLs break because
+    // service worker can terminate before download consumes the blob
+    console.log('[BountySleuth] Converting to data URL...');
+    const base64 = uint8ArrayToBase64(zipData);
+    const downloadUrl = `data:application/zip;base64,${base64}`;
+    console.log('[BountySleuth] Data URL ready, base64 size:', base64.length);
 
     return new Promise((resolve, reject) => {
         chrome.downloads.download({
@@ -938,33 +1084,10 @@ async function unpackSourceMap(url, hostname) {
         }, (downloadId) => {
             if (chrome.runtime.lastError) {
                 console.error('[BountySleuth] Download error:', chrome.runtime.lastError);
-                if (blobUrl) URL.revokeObjectURL(blobUrl);
                 reject(new Error(chrome.runtime.lastError.message));
                 return;
             }
-
             console.log('[BountySleuth] Download started, ID:', downloadId);
-
-            // For blob URLs, revoke after download completes
-            if (blobUrl && downloadId) {
-                const listener = (delta) => {
-                    if (delta.id === downloadId && delta.state) {
-                        if (delta.state.current === 'complete' || delta.state.current === 'interrupted') {
-                            console.log('[BountySleuth] Download finished, revoking blob URL');
-                            URL.revokeObjectURL(blobUrl);
-                            chrome.downloads.onChanged.removeListener(listener);
-                        }
-                    }
-                };
-                chrome.downloads.onChanged.addListener(listener);
-
-                // Fallback: revoke after 5 minutes if listener doesn't fire
-                setTimeout(() => {
-                    URL.revokeObjectURL(blobUrl);
-                    chrome.downloads.onChanged.removeListener(listener);
-                }, 300000);
-            }
-
             resolve({ downloadId, fileCount: addedCount, packages: extractedPackages });
         });
     });
@@ -1004,21 +1127,11 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
                 const uint8Array = new Uint8Array(arrayBuffer);
                 console.log('[BountySleuth] Fetched, size:', uint8Array.length, 'bytes');
 
-                // Use blob URL for large files (>1.5MB), data URL for small files
-                const useDataUrl = uint8Array.length < 1500000;
-                let downloadUrl;
-                let blobUrl = null;
-
-                if (useDataUrl) {
-                    const base64 = uint8ArrayToBase64(uint8Array);
-                    downloadUrl = `data:application/json;base64,${base64}`;
-                    console.log('[BountySleuth] Using data URL (small file)');
-                } else {
-                    const blob = new Blob([uint8Array], { type: 'application/json' });
-                    blobUrl = URL.createObjectURL(blob);
-                    downloadUrl = blobUrl;
-                    console.log('[BountySleuth] Using blob URL (large file)');
-                }
+                // Always use data URL in Chrome MV3 — blob URLs break because
+                // service worker can terminate before download consumes the blob
+                console.log('[BountySleuth] Converting to data URL...');
+                const base64 = uint8ArrayToBase64(uint8Array);
+                const downloadUrl = `data:application/json;base64,${base64}`;
 
                 chrome.downloads.download({
                     url: downloadUrl,
@@ -1027,30 +1140,10 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
                 }, (downloadId) => {
                     if (chrome.runtime.lastError) {
                         console.error('[BountySleuth] Download error:', chrome.runtime.lastError);
-                        if (blobUrl) URL.revokeObjectURL(blobUrl);
                         sendResponse({ status: 'error', message: chrome.runtime.lastError.message });
                         return;
                     }
-
                     console.log('[BountySleuth] Download started, ID:', downloadId);
-
-                    // For blob URLs, revoke after download completes
-                    if (blobUrl && downloadId) {
-                        const listener = (delta) => {
-                            if (delta.id === downloadId && delta.state) {
-                                if (delta.state.current === 'complete' || delta.state.current === 'interrupted') {
-                                    URL.revokeObjectURL(blobUrl);
-                                    chrome.downloads.onChanged.removeListener(listener);
-                                }
-                            }
-                        };
-                        chrome.downloads.onChanged.addListener(listener);
-                        setTimeout(() => {
-                            URL.revokeObjectURL(blobUrl);
-                            chrome.downloads.onChanged.removeListener(listener);
-                        }, 300000);
-                    }
-
                     sendResponse({ status: 'download_started', downloadId });
                 });
             } catch (e) {
@@ -1060,7 +1153,10 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         })();
         return true; // Keep channel open for async response
     } else if (request.action === 'unpackSourceMap' && request.url) {
-        unpackSourceMap(request.url, request.hostname)
+        // Pass tabId for content script fallback fetch (from request or sender)
+        const tabId = request.tabId || (sender && sender.tab ? sender.tab.id : null);
+        console.log('[BountySleuth] Unpack request, tabId:', tabId);
+        unpackSourceMap(request.url, request.hostname, tabId)
             .then(result => sendResponse({
                 status: 'unpack_complete',
                 downloadId: result.downloadId,

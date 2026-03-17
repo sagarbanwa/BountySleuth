@@ -103,6 +103,10 @@ Pre-compiled files for both Google Chrome and Mozilla Firefox are available in t
 
 ## 📝 Changelog
 
+### v3.6.8 — Source Map Fallback & Key Management
+- ✨ **New: Private Key Management** — Safely isolates extension signing `.pem` keys into an ignored directory to prevent accidental commits.
+- 🐛 **Fix: Source Map Download Protocol** — Added content script fallback mechanism to bypass Service Worker CORS restrictions, fetching source maps directly from the page's execution context.
+
 ### v3.6.7 — Core Scanner Refinements & Better Source Maps
 - 🔧 **Improved: Cache Security Analysis** — Drastically reduced false positives by evaluating response status codes, explicitly non-cacheable headers (no-store, private), CDN bypass indicators, and content-type mismatches.
 - 🔧 **Improved: Web Cache Deception** — Added strict cacheability assessment before flagging potential path confusion vulnerabilities.

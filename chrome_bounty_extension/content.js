@@ -2196,10 +2196,35 @@ function saveFindings(findings) {
 // ---- Run on page load ----
 scanPage();
 
-// ---- Listen for manual rescan ----
+// ---- Listen for messages from background/popup ----
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     if (request.action === 'rescan') {
         scanPage();
         sendResponse({ status: 'done' });
+    } else if (request.action === 'fetchSourceMap' && request.url) {
+        // Fetch source map from content script context (bypasses CORS for same-origin)
+        (async () => {
+            try {
+                console.log('[BountySleuth CS] Fetching source map:', request.url);
+                let resp = await fetch(request.url, { credentials: 'include' });
+                if (!resp.ok) {
+                    resp = await fetch(request.url, { credentials: 'omit' });
+                }
+                if (!resp.ok) {
+                    resp = await fetch(request.url);
+                }
+                if (!resp.ok) {
+                    sendResponse({ error: `HTTP ${resp.status}` });
+                    return;
+                }
+                const text = await resp.text();
+                console.log('[BountySleuth CS] Fetched, size:', text.length);
+                sendResponse({ text: text, length: text.length });
+            } catch (e) {
+                console.error('[BountySleuth CS] Fetch error:', e.message);
+                sendResponse({ error: e.message });
+            }
+        })();
+        return true; // Keep channel open for async response
     }
 });
