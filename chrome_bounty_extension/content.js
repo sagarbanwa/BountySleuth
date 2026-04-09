@@ -2203,6 +2203,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         sendResponse({ status: 'done' });
     } else if (request.action === 'fetchSourceMap' && request.url) {
         // Fetch source map from content script context (bypasses CORS for same-origin)
+        // Uses chunked transfer for large files to avoid message size limits
         (async () => {
             try {
                 console.log('[BountySleuth CS] Fetching source map:', request.url);
@@ -2219,12 +2220,84 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
                 }
                 const text = await resp.text();
                 console.log('[BountySleuth CS] Fetched, size:', text.length);
-                sendResponse({ text: text, length: text.length });
+                
+                // Chrome message size limit is ~64MB, Firefox is ~50MB
+                // Use chunked transfer for files >40MB to be safe
+                const CHUNK_SIZE = 40 * 1024 * 1024; // 40MB chunks
+                
+                if (text.length > CHUNK_SIZE) {
+                    console.log('[BountySleuth CS] Large file detected, using chunked transfer');
+                    sendResponse({ 
+                        chunked: true, 
+                        totalSize: text.length,
+                        totalChunks: Math.ceil(text.length / CHUNK_SIZE)
+                    });
+                } else {
+                    sendResponse({ text: text, length: text.length });
+                }
             } catch (e) {
                 console.error('[BountySleuth CS] Fetch error:', e.message);
                 sendResponse({ error: e.message });
             }
         })();
         return true; // Keep channel open for async response
+    } else if (request.action === 'fetchSourceMapChunk' && request.url && request.chunkIndex !== undefined) {
+        // Fetch a specific chunk of a large sourcemap with better error handling
+        (async () => {
+            try {
+                const CHUNK_SIZE = 40 * 1024 * 1024; // 40MB chunks
+                const start = request.chunkIndex * CHUNK_SIZE;
+                const end = start + CHUNK_SIZE - 1;
+                
+                console.log('[BountySleuth CS] Fetching chunk', request.chunkIndex, 'range:', start, '-', end);
+                
+                // Strategy 1: Try Range request first (most efficient)
+                let resp = await fetch(request.url, { 
+                    credentials: 'include',
+                    headers: { 'Range': `bytes=${start}-${end}` }
+                });
+                
+                if (resp.status === 206) {
+                    // Partial content supported - perfect!
+                    const chunk = await resp.text();
+                    console.log('[BountySleuth CS] Chunk', request.chunkIndex, 'size:', chunk.length, '(via Range)');
+                    sendResponse({ chunk: chunk, chunkIndex: request.chunkIndex });
+                    return;
+                }
+                
+                // Strategy 2: Range not supported, fetch full content and slice
+                console.log('[BountySleuth CS] Range not supported, fetching full content...');
+                
+                // Try with credentials
+                resp = await fetch(request.url, { credentials: 'include' });
+                if (!resp.ok) {
+                    // Try without credentials
+                    resp = await fetch(request.url, { credentials: 'omit' });
+                }
+                if (!resp.ok) {
+                    // Try default
+                    resp = await fetch(request.url);
+                }
+                
+                if (!resp.ok) {
+                    throw new Error(`HTTP ${resp.status}`);
+                }
+                
+                const fullText = await resp.text();
+                const chunk = fullText.substring(start, start + CHUNK_SIZE);
+                
+                if (chunk.length === 0 && start < fullText.length) {
+                    throw new Error(`Chunk extraction failed: start=${start}, fullLength=${fullText.length}`);
+                }
+                
+                console.log('[BountySleuth CS] Chunk', request.chunkIndex, 'size:', chunk.length, '(via slice)');
+                sendResponse({ chunk: chunk, chunkIndex: request.chunkIndex });
+                
+            } catch (e) {
+                console.error('[BountySleuth CS] Chunk fetch error:', e.message);
+                sendResponse({ error: `Chunk ${request.chunkIndex} failed: ${e.message}` });
+            }
+        })();
+        return true;
     }
 });

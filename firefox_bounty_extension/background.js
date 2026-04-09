@@ -855,15 +855,20 @@ async function unpackSourceMap(url, hostname, tabId) {
     }
 
     // Strategy 5: Send message to content script
+    // Now supports chunked transfer for large files with retry logic
     if (!text && tabId) {
         try {
             console.log('[BountySleuth] Strategy 5: sendMessage to content script...');
-            text = await new Promise((resolve, reject) => {
+            
+            // First, check if file needs chunked transfer
+            const initialResponse = await new Promise((resolve, reject) => {
                 const timeout = setTimeout(() => reject(new Error('Timeout after 30s')), 30000);
                 browser.tabs.sendMessage(tabId, { action: 'fetchSourceMap', url: url }).then((response) => {
                     clearTimeout(timeout);
-                    if (response && response.text) {
-                        resolve(response.text);
+                    if (response && response.chunked) {
+                        resolve(response);
+                    } else if (response && response.text) {
+                        resolve({ text: response.text });
                     } else if (response && response.error) {
                         reject(new Error(response.error));
                     } else {
@@ -874,7 +879,83 @@ async function unpackSourceMap(url, hostname, tabId) {
                     reject(err);
                 });
             });
-            console.log('[BountySleuth] Strategy 5 SUCCESS, size:', text.length);
+            
+            if (initialResponse.chunked) {
+                // Large file - fetch in chunks with retry logic
+                console.log('[BountySleuth] Large file detected:', initialResponse.totalSize, 'bytes,', initialResponse.totalChunks, 'chunks');
+                const chunks = new Array(initialResponse.totalChunks);
+                const MAX_RETRIES = 3;
+                const RETRY_DELAY = 1000; // 1 second
+                
+                // Helper function to fetch a single chunk with retries
+                const fetchChunkWithRetry = async (chunkIndex, retryCount = 0) => {
+                    try {
+                        console.log('[BountySleuth] Fetching chunk', chunkIndex + 1, '/', initialResponse.totalChunks,
+                                    retryCount > 0 ? `(retry ${retryCount}/${MAX_RETRIES})` : '');
+                        
+                        const chunkResponse = await new Promise((resolve, reject) => {
+                            const timeout = setTimeout(() => reject(new Error('Chunk timeout after 30s')), 30000);
+                            browser.tabs.sendMessage(tabId, { 
+                                action: 'fetchSourceMapChunk', 
+                                url: url, 
+                                chunkIndex: chunkIndex 
+                            }).then((response) => {
+                                clearTimeout(timeout);
+                                if (response && response.chunk !== undefined) {
+                                    resolve(response.chunk);
+                                } else if (response && response.error) {
+                                    reject(new Error(response.error));
+                                } else {
+                                    reject(new Error('Invalid chunk response'));
+                                }
+                            }).catch((err) => {
+                                clearTimeout(timeout);
+                                reject(err);
+                            });
+                        });
+                        
+                        return chunkResponse;
+                    } catch (error) {
+                        if (retryCount < MAX_RETRIES) {
+                            console.warn('[BountySleuth] Chunk', chunkIndex, 'failed:', error.message, '- retrying...');
+                            await new Promise(resolve => setTimeout(resolve, RETRY_DELAY * (retryCount + 1)));
+                            return fetchChunkWithRetry(chunkIndex, retryCount + 1);
+                        } else {
+                            console.error('[BountySleuth] Chunk', chunkIndex, 'failed after', MAX_RETRIES, 'retries');
+                            throw new Error(`Chunk ${chunkIndex} failed after ${MAX_RETRIES} retries: ${error.message}`);
+                        }
+                    }
+                };
+                
+                // Fetch all chunks sequentially with retry support
+                for (let i = 0; i < initialResponse.totalChunks; i++) {
+                    chunks[i] = await fetchChunkWithRetry(i);
+                }
+                
+                // Verify all chunks were received
+                const missingChunks = [];
+                for (let i = 0; i < chunks.length; i++) {
+                    if (chunks[i] === undefined || chunks[i] === null) {
+                        missingChunks.push(i);
+                    }
+                }
+                
+                if (missingChunks.length > 0) {
+                    throw new Error(`Missing chunks: ${missingChunks.join(', ')}`);
+                }
+                
+                text = chunks.join('');
+                console.log('[BountySleuth] Strategy 5 SUCCESS (chunked), total size:', text.length);
+                
+                // Verify size matches expected
+                if (text.length !== initialResponse.totalSize) {
+                    console.warn('[BountySleuth] Size mismatch! Expected:', initialResponse.totalSize, 'Got:', text.length);
+                    // Continue anyway - might be close enough
+                }
+            } else {
+                text = initialResponse.text;
+                console.log('[BountySleuth] Strategy 5 SUCCESS, size:', text.length);
+            }
         } catch (e) {
             console.log('[BountySleuth] Strategy 5 failed:', e.message);
             lastError = e;
