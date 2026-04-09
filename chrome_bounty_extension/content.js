@@ -106,7 +106,7 @@
     script.remove();
 })();
 
-// Global array for live apis
+// Global array for live apis (per-tab, not shared)
 const _liveApis = [];
 
 // Listen for intercepted APIs
@@ -121,7 +121,7 @@ window.addEventListener('message', (event) => {
             curl: event.data.curl
         });
 
-        // Save to storage incrementally
+        // Save to storage incrementally keyed by hostname
         const host = window.location.hostname;
         chrome.storage.local.get([host], (result) => {
             const data = result[host] || {};
@@ -1202,18 +1202,24 @@ async function scanLeaks(findings) {
     // 1. Scan Main Document HTML
     scanLines(document.documentElement.outerHTML, window.location.href);
 
-    // 2. Scan Same-Origin Scripts via fetch
+    // 2. Scan Same-Origin Scripts via fetch (5s timeout per script)
     const scripts = document.querySelectorAll('script[src]');
     const fetchPromises = Array.from(scripts).map(async (s) => {
         const src = s.src;
         if (src && src.startsWith(window.location.origin)) {
+            const controller = new AbortController();
+            const timer = setTimeout(() => controller.abort(), 5000);
             try {
-                const resp = await fetch(src);
+                const resp = await fetch(src, { signal: controller.signal });
+                clearTimeout(timer);
                 if (resp.ok) {
                     const text = await resp.text();
                     scanLines(text, src);
                 }
-            } catch (e) { /* ignore CORS / network errors */ }
+            } catch (e) {
+                clearTimeout(timer);
+                /* ignore CORS / network / abort errors */
+            }
         }
     });
 
@@ -1856,8 +1862,11 @@ async function scanSourceMaps(findings) {
 
     // Helper: validate map URL accessibility
     const validateMap = async (mapUrl) => {
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), 5000);
         try {
-            const resp = await fetch(mapUrl, { method: 'HEAD' });
+            const resp = await fetch(mapUrl, { method: 'HEAD', signal: controller.signal });
+            clearTimeout(timer);
             return {
                 accessible: resp.ok,
                 status: resp.status,
@@ -1866,14 +1875,18 @@ async function scanSourceMaps(findings) {
                 lastModified: resp.headers.get('last-modified') || null
             };
         } catch (e) {
+            clearTimeout(timer);
             return { accessible: false, status: 0, size: null, contentType: 'unknown', lastModified: null };
         }
     };
 
     // Helper: analyze map content to detect framework + source count
     const analyzeMapContent = async (mapUrl) => {
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), 8000); // 8s for content fetch
         try {
-            const resp = await fetch(mapUrl);
+            const resp = await fetch(mapUrl, { signal: controller.signal });
+            clearTimeout(timer);
             if (!resp.ok) return null;
             const text = await resp.text();
             if (text.length > 50 * 1024 * 1024) return { sourceCount: '?', framework: 'unknown', totalSize: text.length };
@@ -1947,6 +1960,7 @@ async function scanSourceMaps(findings) {
                 return { sourceCount: 0, framework: 'parse-error', totalSize: text.length };
             }
         } catch (e) {
+            clearTimeout(timer);
             return null;
         }
     };
@@ -2164,12 +2178,15 @@ async function scanSourceMaps(findings) {
 }
 
 
-// ---- Save Findings to Storage ----
+// ---- Save Findings to Storage (keyed by hostname) ----
 function saveFindings(findings) {
     const host = window.location.hostname;
     chrome.storage.local.get([host], (result) => {
-        const data = result[host] || { wafs: [], live_apis: [] };
+        // Preserve fields written by background.js (wafs, cors, security headers)
+        const existing = result[host] || {};
+        const data = Object.assign({}, existing);
 
+        // Overwrite only the fields content.js owns
         data.csrf = findings.csrf;
         data.xss = findings.xss;
         data.dom_sinks = findings.dom_sinks;
@@ -2186,6 +2203,10 @@ function saveFindings(findings) {
         data.host_header = findings.host_header;
         data.lastScan = new Date().toISOString();
         data.pageUrl = window.location.href;
+        data.hostname = host;
+
+        // Preserve live_apis set by the incremental API interceptor
+        if (!data.live_apis) data.live_apis = [];
 
         const updateObj = {};
         updateObj[host] = data;
@@ -2194,13 +2215,26 @@ function saveFindings(findings) {
 }
 
 // ---- Run on page load ----
-scanPage();
+// Wait for DOM to be interactive/complete before scanning
+// (content script runs at document_start, but most scanners need the DOM)
+function runScan() {
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', () => scanPage());
+    } else {
+        // DOM already ready (e.g. script injected after load or rescan)
+        scanPage();
+    }
+}
+runScan();
 
 // ---- Listen for messages from background/popup ----
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     if (request.action === 'rescan') {
-        scanPage();
-        sendResponse({ status: 'done' });
+        // scanPage is async — MUST return true to keep the port open
+        scanPage()
+            .then(() => sendResponse({ status: 'done' }))
+            .catch(() => sendResponse({ status: 'done' }));
+        return true; // ← keeps message port alive for async response
     } else if (request.action === 'fetchSourceMap' && request.url) {
         // Fetch source map from content script context (bypasses CORS for same-origin)
         // Uses chunked transfer for large files to avoid message size limits

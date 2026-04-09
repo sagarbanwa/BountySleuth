@@ -130,16 +130,14 @@ chrome.webRequest.onHeadersReceived.addListener(
                     }
                 }
 
-                // Cache Issues (merge)
+                // Cache Issues (merge, deduplicated by URL)
                 if (analysis.cache_issues && analysis.cache_issues.length > 0) {
                     if (!data.cache_issues) data.cache_issues = [];
                     analysis.cache_issues.forEach(issue => {
-                        // Avoid duplicates by URL
                         if (!data.cache_issues.some(c => c.url === issue.url)) {
                             data.cache_issues.push(issue);
                         }
                     });
-                    // Keep only last 50 cache issues
                     if (data.cache_issues.length > 50) {
                         data.cache_issues = data.cache_issues.slice(-50);
                     }
@@ -157,7 +155,7 @@ chrome.webRequest.onHeadersReceived.addListener(
         }
     },
     { urls: ['<all_urls>'] },
-    ['responseHeaders']
+    ['responseHeaders', 'extraHeaders']
 );
 
 // ---- Badge Management ----
@@ -194,13 +192,13 @@ function updateBadge(host) {
     }, 250);
 }
 
-// Clear badge when changing tabs
+// Update badge when tab is activated
 chrome.tabs.onActivated.addListener((activeInfo) => {
     chrome.tabs.get(activeInfo.tabId, (tab) => {
         if (tab && tab.url) {
             try {
-                const url = new URL(tab.url);
-                updateBadge(url.hostname);
+                const host = new URL(tab.url).hostname;
+                updateBadge(host);
             } catch (e) { chrome.action.setBadgeText({ text: '' }); }
         }
     });

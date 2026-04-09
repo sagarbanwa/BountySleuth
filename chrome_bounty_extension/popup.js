@@ -25,22 +25,66 @@ document.addEventListener('DOMContentLoaded', () => {
         const host = url.hostname;
         document.getElementById('targetUrl').textContent = host;
 
-        loadData(host);
+        // Check if we already have scan data for this host
+        chrome.storage.local.get([host], (result) => {
+            const data = result[host];
+            if (data && data.lastScan) {
+                // Data exists — show it immediately
+                loadData(host);
+            } else {
+                // No data yet — trigger a scan and poll for results
+                document.getElementById('lastScan').textContent = 'Scanning…';
+                chrome.tabs.sendMessage(tab.id, { action: 'rescan' }, () => {
+                    // Allow up to 30s for scan to complete (source map fetches can be slow)
+                    let attempts = 0;
+                    const maxAttempts = 38; // 38 × 800ms = ~30s
+                    const poll = setInterval(() => {
+                        attempts++;
+                        chrome.storage.local.get([host], (res) => {
+                            const d = res[host];
+                            if ((d && d.lastScan) || attempts >= maxAttempts) {
+                                clearInterval(poll);
+                                loadData(host);
+                            }
+                        });
+                    }, 800);
+                });
+            }
+        });
     });
 
     // Rescan
     document.getElementById('rescanBtn').addEventListener('click', () => {
         chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-            chrome.tabs.sendMessage(tabs[0].id, { action: 'rescan' });
-            setTimeout(() => window.location.reload(), 600);
+            const tab = tabs[0];
+            const host = new URL(tab.url).hostname;
+            const btn = document.getElementById('rescanBtn');
+            btn.textContent = '⏳ Scanning…';
+            btn.disabled = true;
+
+            // Safety fallback in case content script doesn't respond
+            const fallback = setTimeout(() => {
+                loadData(host);
+                btn.textContent = '⟳ Rescan';
+                btn.disabled = false;
+            }, 35000);
+
+            chrome.tabs.sendMessage(tab.id, { action: 'rescan' }, (response) => {
+                clearTimeout(fallback);
+                // Small delay for storage to flush
+                setTimeout(() => {
+                    loadData(host);
+                    btn.textContent = '⟳ Rescan';
+                    btn.disabled = false;
+                }, 300);
+            });
         });
     });
 
     // Export
     document.getElementById('exportBtn').addEventListener('click', () => {
         chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-            const url = new URL(tabs[0].url);
-            const host = url.hostname;
+            const host = new URL(tabs[0].url).hostname;
             chrome.storage.local.get([host], (result) => {
                 const data = result[host] || {};
                 const report = generateReport(host, data);
@@ -52,8 +96,7 @@ document.addEventListener('DOMContentLoaded', () => {
     // Export JSON
     document.getElementById('exportJsonBtn').addEventListener('click', () => {
         chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-            const url = new URL(tabs[0].url);
-            const host = url.hostname;
+            const host = new URL(tabs[0].url).hostname;
             chrome.storage.local.get([host], (result) => {
                 const data = result[host] || {};
                 copyToClipboard(JSON.stringify(data, null, 2), 'exportJsonBtn');
@@ -64,9 +107,10 @@ document.addEventListener('DOMContentLoaded', () => {
     // Clear
     document.getElementById('clearBtn').addEventListener('click', () => {
         chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-            const url = new URL(tabs[0].url);
-            chrome.storage.local.remove(url.hostname, () => {
-                window.location.reload();
+            const host = new URL(tabs[0].url).hostname;
+            chrome.storage.local.remove(host, () => {
+                // Reset UI counts without full page reload
+                loadData(host);
             });
         });
     });
