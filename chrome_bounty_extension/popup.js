@@ -1102,10 +1102,22 @@ function renderSourceMaps(data) {
                 e.stopPropagation();
                 unpackBtn.textContent = '⏳ Unpacking...';
                 const hostname = new URL(sm.mapUrl).hostname;
+                
+                // Listen for progress updates
+                const progressListener = (message) => {
+                    if (message.action === 'unpackProgress' && message.url === sm.mapUrl) {
+                        unpackBtn.textContent = `⏳ ${message.progress}% (${message.current}/${message.total})`;
+                    }
+                };
+                chrome.runtime.onMessage.addListener(progressListener);
+                
                 // Get active tab ID for content script fallback fetch
                 chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
                     const tabId = tabs[0] ? tabs[0].id : null;
                     chrome.runtime.sendMessage({ action: 'unpackSourceMap', url: sm.mapUrl, hostname: hostname, tabId: tabId }, (response) => {
+                        // Remove progress listener
+                        chrome.runtime.onMessage.removeListener(progressListener);
+                        
                         if (response && response.status === 'error') {
                             unpackBtn.textContent = '❌ Error';
                             console.error("Unpack error:", response.message);

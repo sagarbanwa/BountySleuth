@@ -848,8 +848,20 @@ async function unpackSourceMap(url, hostname, tabId) {
                 // Helper function to fetch a single chunk with retries
                 const fetchChunkWithRetry = async (chunkIndex, retryCount = 0) => {
                     try {
+                        const progress = Math.round(((chunkIndex + 1) / initialResponse.totalChunks) * 100);
                         console.log('[BountySleuth] Fetching chunk', chunkIndex + 1, '/', initialResponse.totalChunks, 
-                                    retryCount > 0 ? `(retry ${retryCount}/${MAX_RETRIES})` : '');
+                                    `(${progress}%)`, retryCount > 0 ? `(retry ${retryCount}/${MAX_RETRIES})` : '');
+                        
+                        // Send progress update to popup if possible
+                        try {
+                            chrome.runtime.sendMessage({ 
+                                action: 'unpackProgress', 
+                                url: url,
+                                current: chunkIndex + 1, 
+                                total: initialResponse.totalChunks,
+                                progress: progress
+                            });
+                        } catch (e) { /* Popup might be closed */ }
                         
                         const chunkResponse = await new Promise((resolve, reject) => {
                             const timeout = setTimeout(() => reject(new Error('Chunk timeout after 60s')), 60000);

@@ -2265,8 +2265,8 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
                     return;
                 }
                 
-                // Strategy 2: Range not supported, fetch full content and slice
-                console.log('[BountySleuth CS] Range not supported, fetching full content...');
+                // Strategy 2: Range not supported, use streaming to avoid loading full file
+                console.log('[BountySleuth CS] Range not supported, using streaming approach...');
                 
                 // Try with credentials
                 resp = await fetch(request.url, { credentials: 'include' });
@@ -2281,6 +2281,13 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
                 
                 if (!resp.ok) {
                     throw new Error(`HTTP ${resp.status}`);
+                }
+                
+                // Check content length to avoid loading huge files into memory
+                const contentLength = resp.headers.get('content-length');
+                if (contentLength && parseInt(contentLength) > 500 * 1024 * 1024) {
+                    // File is >500MB and Range not supported - this will be problematic
+                    throw new Error(`File too large (${Math.round(parseInt(contentLength) / 1024 / 1024)}MB) and server doesn't support Range requests. Cannot safely chunk.`);
                 }
                 
                 const fullText = await resp.text();
