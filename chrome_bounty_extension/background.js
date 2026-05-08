@@ -62,8 +62,15 @@ const SECURITY_HEADERS = {
 };
 
 // ---- Main Listener ----
+// Types that carry no security-relevant headers (images, fonts, media, etc.)
+const SKIP_REQUEST_TYPES = new Set(['image', 'font', 'media', 'ping', 'csp_report', 'websocket', 'other']);
+
 chrome.webRequest.onHeadersReceived.addListener(
     function (details) {
+        // Skip static asset types — they don't carry WAF/CORS/security headers worth analyzing
+        // and firing storage read+write for every image/font/icon kills performance
+        if (SKIP_REQUEST_TYPES.has(details.type)) return;
+
         // Now processing main_frame AND xmlhttprequest/fetch (sub_frame)
         const isMain = details.type === 'main_frame';
 
@@ -94,8 +101,10 @@ chrome.webRequest.onHeadersReceived.addListener(
                 checkSecurityHeaders(headerMap, analysis);
             }
 
-            // 3. CORS Analysis (Check all responses)
-            checkCORS(headerMap, analysis, details.url);
+            // 3. CORS Analysis (only relevant for XHR/fetch/main requests, not stylesheets/scripts)
+            if (isMain || details.type === 'xmlhttprequest' || details.type === 'fetch' || details.type === 'sub_frame') {
+                checkCORS(headerMap, analysis, details.url);
+            }
 
             // 4. Server Info Leaks
             checkServerInfo(headerMap, analysis);

@@ -108,28 +108,36 @@
 
 // Global array for live apis (per-tab, not shared)
 const _liveApis = [];
+const _liveApisCurlSet = new Set(); // O(1) dedup
+let _liveApisSaveTimer = null;
 
 // Listen for intercepted APIs
 window.addEventListener('message', (event) => {
     if (event.source !== window || !event.data || event.data.type !== 'BS_API_INTERCEPT') return;
 
-    // De-duplicate (same curl)
-    if (!_liveApis.some(api => api.curl === event.data.curl)) {
+    // De-duplicate (same curl) — using Set for O(1) instead of Array.some()
+    if (!_liveApisCurlSet.has(event.data.curl)) {
+        _liveApisCurlSet.add(event.data.curl);
         _liveApis.push({
             method: event.data.method,
             url: event.data.url,
             curl: event.data.curl
         });
 
-        // Save to storage incrementally keyed by hostname
-        const host = window.location.hostname;
-        chrome.storage.local.get([host], (result) => {
-            const data = result[host] || {};
-            data.live_apis = _liveApis;
-            const updateObj = {};
-            updateObj[host] = data;
-            chrome.storage.local.set(updateObj);
-        });
+        // Debounce storage writes: collect bursts and flush after 1.5s of inactivity
+        // Previously wrote on every API call — on SPAs this is 50-100+ writes/page
+        if (_liveApisSaveTimer) clearTimeout(_liveApisSaveTimer);
+        _liveApisSaveTimer = setTimeout(() => {
+            _liveApisSaveTimer = null;
+            const host = window.location.hostname;
+            chrome.storage.local.get([host], (result) => {
+                const data = result[host] || {};
+                data.live_apis = _liveApis;
+                const updateObj = {};
+                updateObj[host] = data;
+                chrome.storage.local.set(updateObj);
+            });
+        }, 1500);
     }
 });
 
@@ -1171,10 +1179,14 @@ function scanPostMessages(findings) {
 
 // ---- Sensitive Data Leak Scanner (Enhanced) ----
 async function scanLeaks(findings) {
+    // Use a Set for O(1) deduplication instead of O(n) Array.some() per match
+    const seenLeakValues = new Set();
+
     // Helper to scan text line by line
     const scanLines = (text, sourceUrl) => {
         const lines = text.split('\n');
         lines.forEach((line, index) => {
+            if (line.length < 10) return; // skip trivially short lines
             Object.keys(LEAK_PATTERNS).forEach(key => {
                 const regex = LEAK_PATTERNS[key];
                 regex.lastIndex = 0; // reset
@@ -1182,9 +1194,8 @@ async function scanLeaks(findings) {
                 while ((match = regex.exec(line)) !== null) {
                     const matchedValue = match[1] || match[0];
                     if (matchedValue.length < 5) continue; // ignore short false positives
-
-                    // check if we already found this exact value to prevent duplicates
-                    if (findings.leaks.some(l => l.value === matchedValue)) continue;
+                    if (seenLeakValues.has(matchedValue)) continue; // O(1) dedup
+                    seenLeakValues.add(matchedValue);
 
                     findings.leaks.push({
                         type: key,
@@ -1203,23 +1214,26 @@ async function scanLeaks(findings) {
     scanLines(document.documentElement.outerHTML, window.location.href);
 
     // 2. Scan Same-Origin Scripts via fetch (5s timeout per script)
-    const scripts = document.querySelectorAll('script[src]');
-    const fetchPromises = Array.from(scripts).map(async (s) => {
+    // Cap at 10 scripts — fetching every script on large sites causes noticeable lag
+    const MAX_LEAK_SCRIPTS = 10;
+    const scripts = Array.from(document.querySelectorAll('script[src]'))
+        .filter(s => s.src && s.src.startsWith(window.location.origin))
+        .slice(0, MAX_LEAK_SCRIPTS);
+
+    const fetchPromises = scripts.map(async (s) => {
         const src = s.src;
-        if (src && src.startsWith(window.location.origin)) {
-            const controller = new AbortController();
-            const timer = setTimeout(() => controller.abort(), 5000);
-            try {
-                const resp = await fetch(src, { signal: controller.signal });
-                clearTimeout(timer);
-                if (resp.ok) {
-                    const text = await resp.text();
-                    scanLines(text, src);
-                }
-            } catch (e) {
-                clearTimeout(timer);
-                /* ignore CORS / network / abort errors */
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), 5000);
+        try {
+            const resp = await fetch(src, { signal: controller.signal });
+            clearTimeout(timer);
+            if (resp.ok) {
+                const text = await resp.text();
+                scanLines(text, src);
             }
+        } catch (e) {
+            clearTimeout(timer);
+            /* ignore CORS / network / abort errors */
         }
     });
 
@@ -1965,6 +1979,11 @@ async function scanSourceMaps(findings) {
         }
     };
 
+    // Limit full map content analysis to avoid runaway 8s fetches
+    // (each analyzeMapContent can take up to 8s + download full .map file)
+    const MAX_MAP_ANALYSES = 5;
+    let mapAnalysisCount = 0;
+
     // Helper: add finding (deduplicated)
     const addFinding = async (jsUrl, mapUrl, source, doAnalyze) => {
         if (seenMapUrls.has(mapUrl)) return;
@@ -1972,7 +1991,8 @@ async function scanSourceMaps(findings) {
 
         const validation = await validateMap(mapUrl);
         let analysis = null;
-        if (validation.accessible && doAnalyze) {
+        if (validation.accessible && doAnalyze && mapAnalysisCount < MAX_MAP_ANALYSES) {
+            mapAnalysisCount++;
             analysis = await analyzeMapContent(mapUrl);
         }
 
@@ -1993,8 +2013,17 @@ async function scanSourceMaps(findings) {
     // ============================================
     // 1. Scan external JS scripts
     // ============================================
-    const scripts = document.querySelectorAll('script[src]');
-    const scriptPromises = Array.from(scripts).map(async (s) => {
+    // Cap scripts processed — fetching all JS on a large site (50+ scripts) causes
+    // massive lag: each script fetch + HEAD probe + full .map download per found map.
+    // Prioritize same-origin scripts first (more likely to have accessible source maps).
+    const MAX_SOURCEMAP_SCRIPTS = 20;
+    const allScripts = Array.from(document.querySelectorAll('script[src]'))
+        .filter(s => s.src && !s.src.startsWith('chrome-extension://') && !s.src.startsWith('moz-extension://'));
+    const sameOriginScripts = allScripts.filter(s => s.src.startsWith(window.location.origin));
+    const crossOriginScripts = allScripts.filter(s => !s.src.startsWith(window.location.origin));
+    const scripts = [...sameOriginScripts, ...crossOriginScripts].slice(0, MAX_SOURCEMAP_SCRIPTS);
+
+    const scriptPromises = scripts.map(async (s) => {
         const src = s.src;
         if (!src || src.startsWith('chrome-extension://') || src.startsWith('moz-extension://')) return;
 

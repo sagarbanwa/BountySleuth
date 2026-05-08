@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "skills": {
+    "bug-bounty": {
+      "source": "shuvonsec/claude-bug-bounty",
+      "sourceType": "github",
+      "computedHash": "25dfc3d49bf3dd3bf79a966aed1e3a82e5c4f46a5e925307dc15a52087c23e27"
+    }
+  }
+}
