@@ -35,3 +35,5 @@ releases/
 # Secrets
 private_keys/
 *.pem
+.bob/skills/
+

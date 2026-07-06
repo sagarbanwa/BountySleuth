@@ -409,6 +409,9 @@ async function scanPage() {
     // 13. SAVE ALL FINDINGS
     // =============================================
     saveFindings(findings);
+
+    // Active XSS probe — runs async after initial save, updates storage when done
+    probeReflectedXSS(window.location.hostname).catch(() => {});
 }
 
 // ---- CSRF Scanner (Enhanced v3.6.5 - Advanced Token Analysis) ----
@@ -1213,27 +1216,18 @@ async function scanLeaks(findings) {
     // 1. Scan Main Document HTML
     scanLines(document.documentElement.outerHTML, window.location.href);
 
-    // 2. Scan Same-Origin Scripts via fetch (5s timeout per script)
-    // Cap at 10 scripts — fetching every script on large sites causes noticeable lag
-    const MAX_LEAK_SCRIPTS = 10;
-    const scripts = Array.from(document.querySelectorAll('script[src]'))
-        .filter(s => s.src && s.src.startsWith(window.location.origin))
-        .slice(0, MAX_LEAK_SCRIPTS);
-
-    const fetchPromises = scripts.map(async (s) => {
+    // 2. Scan Same-Origin Scripts via fetch
+    const scripts = document.querySelectorAll('script[src]');
+    const fetchPromises = Array.from(scripts).map(async (s) => {
         const src = s.src;
-        const controller = new AbortController();
-        const timer = setTimeout(() => controller.abort(), 5000);
-        try {
-            const resp = await fetch(src, { signal: controller.signal });
-            clearTimeout(timer);
-            if (resp.ok) {
-                const text = await resp.text();
-                scanLines(text, src);
-            }
-        } catch (e) {
-            clearTimeout(timer);
-            /* ignore CORS / network / abort errors */
+        if (src && src.startsWith(window.location.origin)) {
+            try {
+                const resp = await fetch(src);
+                if (resp.ok) {
+                    const text = await resp.text();
+                    scanLines(text, src);
+                }
+            } catch (e) { /* ignore CORS / network errors */ }
         }
     });
 
@@ -1876,11 +1870,8 @@ async function scanSourceMaps(findings) {
 
     // Helper: validate map URL accessibility
     const validateMap = async (mapUrl) => {
-        const controller = new AbortController();
-        const timer = setTimeout(() => controller.abort(), 5000);
         try {
-            const resp = await fetch(mapUrl, { method: 'HEAD', signal: controller.signal });
-            clearTimeout(timer);
+            const resp = await fetch(mapUrl, { method: 'HEAD' });
             return {
                 accessible: resp.ok,
                 status: resp.status,
@@ -1889,18 +1880,14 @@ async function scanSourceMaps(findings) {
                 lastModified: resp.headers.get('last-modified') || null
             };
         } catch (e) {
-            clearTimeout(timer);
             return { accessible: false, status: 0, size: null, contentType: 'unknown', lastModified: null };
         }
     };
 
     // Helper: analyze map content to detect framework + source count
     const analyzeMapContent = async (mapUrl) => {
-        const controller = new AbortController();
-        const timer = setTimeout(() => controller.abort(), 8000); // 8s for content fetch
         try {
-            const resp = await fetch(mapUrl, { signal: controller.signal });
-            clearTimeout(timer);
+            const resp = await fetch(mapUrl);
             if (!resp.ok) return null;
             const text = await resp.text();
             if (text.length > 50 * 1024 * 1024) return { sourceCount: '?', framework: 'unknown', totalSize: text.length };
@@ -1974,15 +1961,9 @@ async function scanSourceMaps(findings) {
                 return { sourceCount: 0, framework: 'parse-error', totalSize: text.length };
             }
         } catch (e) {
-            clearTimeout(timer);
             return null;
         }
     };
-
-    // Limit full map content analysis to avoid runaway 8s fetches
-    // (each analyzeMapContent can take up to 8s + download full .map file)
-    const MAX_MAP_ANALYSES = 5;
-    let mapAnalysisCount = 0;
 
     // Helper: add finding (deduplicated)
     const addFinding = async (jsUrl, mapUrl, source, doAnalyze) => {
@@ -1991,8 +1972,7 @@ async function scanSourceMaps(findings) {
 
         const validation = await validateMap(mapUrl);
         let analysis = null;
-        if (validation.accessible && doAnalyze && mapAnalysisCount < MAX_MAP_ANALYSES) {
-            mapAnalysisCount++;
+        if (validation.accessible && doAnalyze) {
             analysis = await analyzeMapContent(mapUrl);
         }
 
@@ -2013,17 +1993,8 @@ async function scanSourceMaps(findings) {
     // ============================================
     // 1. Scan external JS scripts
     // ============================================
-    // Cap scripts processed — fetching all JS on a large site (50+ scripts) causes
-    // massive lag: each script fetch + HEAD probe + full .map download per found map.
-    // Prioritize same-origin scripts first (more likely to have accessible source maps).
-    const MAX_SOURCEMAP_SCRIPTS = 20;
-    const allScripts = Array.from(document.querySelectorAll('script[src]'))
-        .filter(s => s.src && !s.src.startsWith('chrome-extension://') && !s.src.startsWith('moz-extension://'));
-    const sameOriginScripts = allScripts.filter(s => s.src.startsWith(window.location.origin));
-    const crossOriginScripts = allScripts.filter(s => !s.src.startsWith(window.location.origin));
-    const scripts = [...sameOriginScripts, ...crossOriginScripts].slice(0, MAX_SOURCEMAP_SCRIPTS);
-
-    const scriptPromises = scripts.map(async (s) => {
+    const scripts = document.querySelectorAll('script[src]');
+    const scriptPromises = Array.from(scripts).map(async (s) => {
         const src = s.src;
         if (!src || src.startsWith('chrome-extension://') || src.startsWith('moz-extension://')) return;
 
@@ -2237,6 +2208,87 @@ function saveFindings(findings) {
         // Preserve live_apis set by the incremental API interceptor
         if (!data.live_apis) data.live_apis = [];
 
+        const updateObj = {};
+        updateObj[host] = data;
+        chrome.storage.local.set(updateObj);
+    });
+}
+
+// ---- Active XSS Probe (runs after initial save, updates storage when done) ----
+// For each URL query param, fetches the page with bsltTOKEN<"'> as the value.
+// If the special chars come back unencoded, it's a confirmed reflected XSS vector.
+async function probeReflectedXSS(host) {
+    const params = [...new URLSearchParams(window.location.search).entries()];
+    if (params.length === 0) return;
+
+    const token = Math.random().toString(36).substring(2, 8);
+    const PROBE = `bslt${token}<"'>`;
+    const SAFE_TOKEN = `bslt${token}`;
+    const probeResults = {};
+
+    for (const [key] of params) {
+        try {
+            const probeUrl = new URL(window.location.href);
+            probeUrl.searchParams.set(key, PROBE);
+
+            const controller = new AbortController();
+            const timer = setTimeout(() => controller.abort(), 8000);
+            const resp = await fetch(probeUrl.href, { signal: controller.signal, credentials: 'include' });
+            clearTimeout(timer);
+
+            if (!resp.ok) {
+                probeResults[key] = { confirmed: null, reason: `HTTP ${resp.status}` };
+                continue;
+            }
+
+            const html = await resp.text();
+            const idx = html.indexOf(SAFE_TOKEN);
+
+            if (idx === -1) {
+                probeResults[key] = { confirmed: false, reason: 'probe not reflected in response' };
+                continue;
+            }
+
+            // Check chars immediately surrounding the reflected token
+            const snippet = html.substring(Math.max(0, idx - 5), Math.min(html.length, idx + PROBE.length + 5));
+            const unsafeChars = [];
+            if (snippet.includes('<')) unsafeChars.push('<');
+            if (snippet.includes('"')) unsafeChars.push('"');
+            if (snippet.includes("'")) unsafeChars.push("'");
+
+            // Determine context from the ~200 chars before the token
+            const pre = html.substring(Math.max(0, idx - 200), idx);
+            let context = 'HTML';
+            if (/<script[^>]*>[^<]*$/i.test(pre)) context = 'SCRIPT';
+            else if (/=['"][^'"]*$/.test(pre)) context = 'ATTR';
+
+            if (unsafeChars.length > 0) {
+                probeResults[key] = {
+                    confirmed: true,
+                    unsafeChars,
+                    context,
+                    reason: `Unencoded ${unsafeChars.join(' ')} in ${context} context`
+                };
+            } else {
+                probeResults[key] = { confirmed: false, reason: 'reflected but < " \' are encoded — sanitized' };
+            }
+        } catch (e) {
+            probeResults[key] = {
+                confirmed: null,
+                reason: e.name === 'AbortError' ? 'probe timed out' : e.message
+            };
+        }
+    }
+
+    // Merge probe results back into reflected_params in storage
+    chrome.storage.local.get([host], (result) => {
+        const data = result[host] || {};
+        if (Array.isArray(data.reflected_params)) {
+            data.reflected_params = data.reflected_params.map(r => {
+                const p = probeResults[r.param];
+                return p ? { ...r, probe: p } : r;
+            });
+        }
         const updateObj = {};
         updateObj[host] = data;
         chrome.storage.local.set(updateObj);
